@@ -67,6 +67,9 @@
     importStudents(payload) {
       return callTeacher('student.import', payload);
     },
+    deleteStudent(docId) {
+      return callTeacher('student.delete', { doc_id: docId });
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },

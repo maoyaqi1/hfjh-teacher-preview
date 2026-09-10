@@ -190,12 +190,12 @@
   }
 
   // ---- 学生管理 ----
-  const studentFilter = { keyword: '', school: '', class_name: '' };
+  const studentFilter = { keyword: '', school: '', class_name: '', registered: '' };
 
   async function renderStudents(container) {
     container.innerHTML =
       '<div class="page-title">学生管理</div>' +
-      '<div class="page-sub">共 <b id="stuTotal">--</b> 名学生（按姓名 / 学号 / 学校 / 班级管理）</div>' +
+      '<div class="page-sub">名册 <b id="stuSumTotal">--</b> 人　·　已注册 <b id="stuSumReg" class="ok">--</b> 人　·　未注册 <b id="stuSumUnreg" class="err">--</b> 人</div>' +
       '<div class="card">' +
         '<div class="tool-row">' +
           '<button class="login-btn filter-btn" id="stuAdd">+ 新增学生</button>' +
@@ -206,12 +206,18 @@
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
           '<select id="stuSchool" class="filter-select"></select>' +
           '<select id="stuClass" class="filter-select"></select>' +
+          '<select id="stuReg" class="filter-select">' +
+            '<option value="">全部状态</option>' +
+            '<option value="no">未注册</option>' +
+            '<option value="yes">已注册</option>' +
+          '</select>' +
           '<button id="stuSearch" class="login-btn filter-btn">搜索</button>' +
         '</div>' +
         '<table id="stuTable" style="width:100%;border-collapse:collapse"></table>' +
       '</div>';
 
     $('stuKeyword').value = studentFilter.keyword;
+    $('stuReg').value = studentFilter.registered;
     $('stuAdd').addEventListener('click', openAddStudent);
     $('stuTpl').addEventListener('click', downloadStudentTemplate);
     $('stuImport').addEventListener('click', openImportStudents);
@@ -219,11 +225,13 @@
       studentFilter.keyword = $('stuKeyword').value.trim();
       studentFilter.school = $('stuSchool').value;
       studentFilter.class_name = $('stuClass').value;
+      studentFilter.registered = $('stuReg').value;
       loadStudents();
     });
     $('stuKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('stuSearch').click(); });
     $('stuSchool').addEventListener('change', () => $('stuSearch').click());
     $('stuClass').addEventListener('change', () => $('stuSearch').click());
+    $('stuReg').addEventListener('change', () => $('stuSearch').click());
 
     await loadStudents();
   }
@@ -241,27 +249,34 @@
 
     fillSelect($('stuSchool'), res.schools || [], '全部学校', studentFilter.school);
     fillSelect($('stuClass'), res.classes || [], '全部班级', studentFilter.class_name);
-    $('stuTotal').textContent = res.total;
+    const sum = res.summary || { total: 0, registered: 0, unregistered: 0 };
+    $('stuSumTotal').textContent = sum.total;
+    $('stuSumReg').textContent = sum.registered;
+    $('stuSumUnreg').textContent = sum.unregistered;
 
     const items = res.items || [];
     let html = '<tr style="background:var(--panel-soft);text-align:left">' +
       '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>班级</th>' +
-      '<th>注册时间</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
+      '<th>注册状态</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
 
     items.forEach((s) => {
       const cls = s.class_name
         ? esc(s.class_name)
         : '<span style="color:#9aa5b2">未分班</span>';
+      const reg = s.registered
+        ? '<span class="ok">已注册</span>'
+        : '<span class="pending">未注册</span>';
       html += '<tr style="border-top:1px solid var(--border)">' +
         '<td style="padding:10px">' + esc(s.name) + '</td>' +
-        '<td>' + esc(s.student_id) + '</td>' +
+        '<td>' + esc(s.student_no) + '</td>' +
         '<td>' + esc(s.school) + '</td>' +
         '<td>' + cls + '</td>' +
-        '<td style="color:#6a7688">' + fmtDate(s.created_at) + '</td>' +
+        '<td>' + reg + '</td>' +
         '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
         '<td style="text-align:right">' +
           '<button class="mini-btn" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) +
-          '" data-class="' + esc(s.class_name) + '">设置班级</button>' +
+          '" data-class="' + esc(s.class_name) + '">设置班级</button> ' +
+          '<button class="mini-btn danger" data-del="' + esc(s.id) + '" data-name="' + esc(s.name) + '">移除</button>' +
         '</td></tr>';
     });
     if (!items.length) {
@@ -270,6 +285,9 @@
     table.innerHTML = html;
     table.querySelectorAll('button[data-id]').forEach((btn) => {
       btn.addEventListener('click', () => editStudentClass(btn));
+    });
+    table.querySelectorAll('button[data-del]').forEach((btn) => {
+      btn.addEventListener('click', () => removeStudent(btn));
     });
   }
 
@@ -297,6 +315,18 @@
       await loadStudents();
     } else {
       alert((res && res.msg) || '保存失败');
+    }
+  }
+
+  async function removeStudent(btn) {
+    const id = btn.dataset.del;
+    const name = btn.dataset.name;
+    if (!confirm('确定从名册中移除「' + name + '」吗？\n（只移除教师名册记录，不影响该学生已注册的微信账号）')) return;
+    const res = await api.deleteStudent(id);
+    if (res && res.ok) {
+      await loadStudents();
+    } else {
+      alert((res && res.msg) || '移除失败');
     }
   }
 
@@ -351,7 +381,7 @@
         school: $('fSchool').value.trim(),
         class_name: $('fClass').value.trim(),
         name: $('fName').value.trim(),
-        student_id: $('fNo').value.trim()
+        student_no: $('fNo').value.trim()
       };
       $('fErr').textContent = '';
       $('fSave').disabled = true;
@@ -394,7 +424,7 @@
         school: cols[0] || '',
         class_name: cols[1] || '',
         name: cols[2] || '',
-        student_id: cols[3] || ''
+        student_no: cols[3] || ''
       });
     });
     return rows;

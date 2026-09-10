@@ -365,3 +365,8 @@ button {
 .imp-sum .ok { color: #1a9a4b; }
 .imp-sum .err, .imp-result .err { color: var(--danger); }
 .imp-errs { margin-top: 8px; max-height: 180px; overflow: auto; color: var(--danger); line-height: 1.8; }
+
+/* ---- 状态文字 ---- */
+.page-sub .ok, td .ok { color: #1a9a4b; font-weight: 600; }
+.page-sub .err { color: var(--danger); font-weight: 600; }
+td .pending { color: #c98a12; font-weight: 600; }
