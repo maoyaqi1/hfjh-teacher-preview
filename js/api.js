@@ -61,6 +61,12 @@
     updateStudent(payload) {
       return callTeacher('student.update', payload);
     },
+    createStudent(payload) {
+      return callTeacher('student.create', payload);
+    },
+    importStudents(payload) {
+      return callTeacher('student.import', payload);
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },

@@ -197,6 +197,11 @@
       '<div class="page-title">学生管理</div>' +
       '<div class="page-sub">共 <b id="stuTotal">--</b> 名学生（按姓名 / 学号 / 学校 / 班级管理）</div>' +
       '<div class="card">' +
+        '<div class="tool-row">' +
+          '<button class="login-btn filter-btn" id="stuAdd">+ 新增学生</button>' +
+          '<button class="mini-btn" id="stuTpl">下载导入模板</button>' +
+          '<button class="mini-btn" id="stuImport">批量导入</button>' +
+        '</div>' +
         '<div class="filter-row">' +
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
           '<select id="stuSchool" class="filter-select"></select>' +
@@ -207,6 +212,9 @@
       '</div>';
 
     $('stuKeyword').value = studentFilter.keyword;
+    $('stuAdd').addEventListener('click', openAddStudent);
+    $('stuTpl').addEventListener('click', downloadStudentTemplate);
+    $('stuImport').addEventListener('click', openImportStudents);
     $('stuSearch').addEventListener('click', () => {
       studentFilter.keyword = $('stuKeyword').value.trim();
       studentFilter.school = $('stuSchool').value;
@@ -299,6 +307,164 @@
     const p = (n) => (n < 10 ? '0' + n : '' + n);
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
       ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  // ---- 通用弹窗 ----
+  function openModal(title, bodyHtml, footHtml) {
+    closeModal();
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-mask';
+    wrap.id = 'modalMask';
+    wrap.innerHTML =
+      '<div class="modal">' +
+        '<div class="modal-head"><span class="modal-title">' + esc(title) + '</span>' +
+        '<button class="modal-x" id="modalX">×</button></div>' +
+        '<div class="modal-body">' + bodyHtml + '</div>' +
+        '<div class="modal-foot">' + (footHtml || '') + '</div>' +
+      '</div>';
+    document.body.appendChild(wrap);
+    $('modalX').addEventListener('click', closeModal);
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) closeModal(); });
+  }
+
+  function closeModal() {
+    const m = $('modalMask');
+    if (m) m.remove();
+  }
+
+  // ---- 新增学生 ----
+  function openAddStudent() {
+    openModal('新增学生',
+      '<div class="form-grid">' +
+        '<div class="fld"><label>学校 <i>*</i></label><input id="fSchool" class="filter-input" placeholder="如 安徽建筑大学" /></div>' +
+        '<div class="fld"><label>班级</label><input id="fClass" class="filter-input" placeholder="如 机械2401" /></div>' +
+        '<div class="fld"><label>姓名 <i>*</i></label><input id="fName" class="filter-input" placeholder="学生姓名" /></div>' +
+        '<div class="fld"><label>学号 <i>*</i></label><input id="fNo" class="filter-input" placeholder="学号（唯一）" /></div>' +
+      '</div>' +
+      '<div id="fErr" class="form-err"></div>',
+      '<button class="mini-btn" id="fCancel">取消</button>' +
+      '<button class="login-btn filter-btn" id="fSave">保存</button>');
+
+    $('fCancel').addEventListener('click', closeModal);
+    $('fSave').addEventListener('click', async () => {
+      const payload = {
+        school: $('fSchool').value.trim(),
+        class_name: $('fClass').value.trim(),
+        name: $('fName').value.trim(),
+        student_id: $('fNo').value.trim()
+      };
+      $('fErr').textContent = '';
+      $('fSave').disabled = true;
+      const res = await api.createStudent(payload);
+      $('fSave').disabled = false;
+      if (res && res.ok) {
+        closeModal();
+        await loadStudents();
+      } else {
+        $('fErr').textContent = (res && res.msg) || '保存失败';
+      }
+    });
+    setTimeout(() => { const el = $('fSchool'); if (el) el.focus(); }, 50);
+  }
+
+  // ---- 下载导入模板 ----
+  function downloadStudentTemplate() {
+    const csv = '\uFEFF学校,班级,姓名,学号\n' +
+      '安徽建筑大学,机械2401,张三,20240001\n' +
+      '安徽建筑大学,机械2401,李四,20240002\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = '学生导入模板.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // 解析 CSV / 粘贴文本：每行「学校,班级,姓名,学号」
+  function parseStudentRows(text) {
+    const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim());
+    const rows = [];
+    lines.forEach((line, idx) => {
+      const cols = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+      if (idx === 0 && cols.some((c) => c.indexOf('学号') >= 0 || c.indexOf('姓名') >= 0)) return;
+      if (!cols.join('').trim()) return;
+      rows.push({
+        school: cols[0] || '',
+        class_name: cols[1] || '',
+        name: cols[2] || '',
+        student_id: cols[3] || ''
+      });
+    });
+    return rows;
+  }
+
+  // ---- 批量导入 ----
+  function openImportStudents() {
+    openModal('批量导入学生',
+      '<p class="hint">按模板填写 CSV（表头：学校,班级,姓名,学号）。可先下载模板。</p>' +
+      '<div class="fld"><label>选择 CSV 文件</label><input type="file" id="impFile" accept=".csv,text/csv" /></div>' +
+      '<div class="fld"><label>或直接粘贴内容（每行一条，逗号分隔）</label>' +
+      '<textarea id="impText" class="filter-input imp-text" placeholder="安徽建筑大学,机械2401,张三,20240001"></textarea></div>' +
+      '<div id="impResult" class="imp-result"></div>',
+      '<button class="mini-btn" id="impCancel">取消</button>' +
+      '<button class="mini-btn" id="impValidate">校验</button>' +
+      '<button class="login-btn filter-btn" id="impCommit" disabled>确认导入</button>');
+
+    let pendingRows = null;
+
+    $('impCancel').addEventListener('click', closeModal);
+
+    $('impFile').addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => { $('impText').value = String(reader.result || ''); };
+      reader.readAsText(file, 'utf-8');
+    });
+
+    $('impValidate').addEventListener('click', async () => {
+      const rows = parseStudentRows($('impText').value);
+      const box = $('impResult');
+      if (!rows.length) { box.innerHTML = '<span class="err">没有可导入的数据，请检查格式。</span>'; return; }
+      $('impValidate').disabled = true;
+      const res = await api.importStudents({ mode: 'validate', rows });
+      $('impValidate').disabled = false;
+      if (!res || !res.ok) {
+        box.innerHTML = '<span class="err">' + ((res && res.msg) || '校验失败') + '</span>';
+        return;
+      }
+      const s = res.summary || {};
+      let html = '<div class="imp-sum">共 <b>' + s.total + '</b> 条：可导入 <b class="ok">' + s.valid +
+        '</b>，学号重复 <b class="err">' + (s.duplicate || 0) + '</b>，信息缺失 <b class="err">' +
+        (s.missing || 0) + '</b></div>';
+      if (res.errors && res.errors.length) {
+        html += '<div class="imp-errs">';
+        res.errors.slice(0, 30).forEach((er) => {
+          html += '<div>第 ' + er.line + ' 行：' + esc(er.field) + ' ' + esc(er.reason) + '</div>';
+        });
+        if (res.errors.length > 30) html += '<div>…还有 ' + (res.errors.length - 30) + ' 条</div>';
+        html += '</div>';
+      }
+      box.innerHTML = html;
+      pendingRows = rows;
+      $('impCommit').disabled = !(s.valid > 0);
+    });
+
+    $('impCommit').addEventListener('click', async () => {
+      if (!pendingRows) return;
+      $('impCommit').disabled = true;
+      const res = await api.importStudents({ mode: 'commit', rows: pendingRows });
+      if (res && res.ok) {
+        alert('导入完成：新增 ' + res.added + ' 条');
+        closeModal();
+        await loadStudents();
+      } else {
+        alert((res && res.msg) || '导入失败');
+        $('impCommit').disabled = false;
+      }
+    });
   }
 
   function renderPlaceholder(container, name) {
