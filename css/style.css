@@ -270,3 +270,28 @@ button {
   font-size: 12px;
 }
 .mini-btn.danger { color: var(--danger); border-color: var(--danger); }
+
+/* ---- 学生管理筛选栏 ---- */
+.filter-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.filter-input {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--text);
+  outline: none;
+}
+.filter-input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12); }
+.filter-select {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--text);
+  outline: none;
+}
+.filter-btn { width: auto; padding: 9px 20px; margin: 0; }

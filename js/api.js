@@ -55,6 +55,12 @@
     dashboard() {
       return callTeacher('dashboard', {});
     },
+    listStudents(filter) {
+      return callTeacher('student.list', filter || {});
+    },
+    updateStudent(payload) {
+      return callTeacher('student.update', payload);
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },

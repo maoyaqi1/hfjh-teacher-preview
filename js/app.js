@@ -131,7 +131,7 @@
     content.innerHTML = '';
     if (key === 'dashboard') await renderDashboard(content);
     else if (key === 'teachers') await renderTeachers(content);
-    else if (key === 'students') renderStudents(content);
+    else if (key === 'students') await renderStudents(content);
     else if (key === 'plp') renderPlaceholder(content, '点线面分析');
     else if (key === 'ai') renderPlaceholder(content, 'AI 教师分析');
     else renderPlaceholder(content, '系统设置');
@@ -189,8 +189,116 @@
     }
   }
 
-  function renderStudents(container) {
-    container.innerHTML = '<div class="card"><div class="placeholder"><div class="icon">🚧</div><div>学生管理将在后续阶段实现</div></div></div>';
+  // ---- 学生管理 ----
+  const studentFilter = { keyword: '', school: '', class_name: '' };
+
+  async function renderStudents(container) {
+    container.innerHTML =
+      '<div class="page-title">学生管理</div>' +
+      '<div class="page-sub">共 <b id="stuTotal">--</b> 名学生（按姓名 / 学号 / 学校 / 班级管理）</div>' +
+      '<div class="card">' +
+        '<div class="filter-row">' +
+          '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
+          '<select id="stuSchool" class="filter-select"></select>' +
+          '<select id="stuClass" class="filter-select"></select>' +
+          '<button id="stuSearch" class="login-btn filter-btn">搜索</button>' +
+        '</div>' +
+        '<table id="stuTable" style="width:100%;border-collapse:collapse"></table>' +
+      '</div>';
+
+    $('stuKeyword').value = studentFilter.keyword;
+    $('stuSearch').addEventListener('click', () => {
+      studentFilter.keyword = $('stuKeyword').value.trim();
+      studentFilter.school = $('stuSchool').value;
+      studentFilter.class_name = $('stuClass').value;
+      loadStudents();
+    });
+    $('stuKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('stuSearch').click(); });
+    $('stuSchool').addEventListener('change', () => $('stuSearch').click());
+    $('stuClass').addEventListener('change', () => $('stuSearch').click());
+
+    await loadStudents();
+  }
+
+  async function loadStudents() {
+    const table = $('stuTable');
+    if (!table) return;
+    table.innerHTML = '<tr><td style="padding:16px;color:#6a7688">加载中…</td></tr>';
+
+    const res = await api.listStudents(studentFilter);
+    if (!res || !res.ok) {
+      table.innerHTML = '<tr><td style="padding:16px;color:#e04444">' + ((res && res.msg) || '加载失败') + '</td></tr>';
+      return;
+    }
+
+    fillSelect($('stuSchool'), res.schools || [], '全部学校', studentFilter.school);
+    fillSelect($('stuClass'), res.classes || [], '全部班级', studentFilter.class_name);
+    $('stuTotal').textContent = res.total;
+
+    const items = res.items || [];
+    let html = '<tr style="background:var(--panel-soft);text-align:left">' +
+      '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>班级</th>' +
+      '<th>注册时间</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
+
+    items.forEach((s) => {
+      const cls = s.class_name
+        ? esc(s.class_name)
+        : '<span style="color:#9aa5b2">未分班</span>';
+      html += '<tr style="border-top:1px solid var(--border)">' +
+        '<td style="padding:10px">' + esc(s.name) + '</td>' +
+        '<td>' + esc(s.student_id) + '</td>' +
+        '<td>' + esc(s.school) + '</td>' +
+        '<td>' + cls + '</td>' +
+        '<td style="color:#6a7688">' + fmtDate(s.created_at) + '</td>' +
+        '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
+        '<td style="text-align:right">' +
+          '<button class="mini-btn" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) +
+          '" data-class="' + esc(s.class_name) + '">设置班级</button>' +
+        '</td></tr>';
+    });
+    if (!items.length) {
+      html += '<tr><td colspan="7" style="padding:26px;text-align:center;color:#9aa5b2">没有匹配的学生</td></tr>';
+    }
+    table.innerHTML = html;
+    table.querySelectorAll('button[data-id]').forEach((btn) => {
+      btn.addEventListener('click', () => editStudentClass(btn));
+    });
+  }
+
+  function fillSelect(sel, options, allLabel, current) {
+    if (!sel) return;
+    let html = '<option value="">' + allLabel + '</option>';
+    options.forEach((o) => {
+      html += '<option value="' + esc(o) + '">' + esc(o) + '</option>';
+    });
+    if (current && options.indexOf(current) < 0) {
+      html += '<option value="' + esc(current) + '">' + esc(current) + '</option>';
+    }
+    sel.innerHTML = html;
+    sel.value = current || '';
+  }
+
+  async function editStudentClass(btn) {
+    const id = btn.dataset.id;
+    const name = btn.dataset.name;
+    const current = btn.dataset.class || '';
+    const value = prompt('为「' + name + '」设置班级（留空表示不设班级）：', current);
+    if (value === null) return;
+    const res = await api.updateStudent({ doc_id: id, class_name: value });
+    if (res && res.ok) {
+      await loadStudents();
+    } else {
+      alert((res && res.msg) || '保存失败');
+    }
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso).slice(0, 10);
+    const p = (n) => (n < 10 ? '0' + n : '' + n);
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+      ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
   }
 
   function renderPlaceholder(container, name) {
