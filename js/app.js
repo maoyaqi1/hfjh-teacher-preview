@@ -274,6 +274,9 @@
         '<td>' + reg + '</td>' +
         '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
         '<td style="text-align:right">' +
+          '<button class="mini-btn" data-edit="' + esc(s.id) + '"' +
+            ' data-school="' + esc(s.school) + '" data-class="' + esc(s.class_name) + '"' +
+            ' data-name="' + esc(s.name) + '" data-no="' + esc(s.student_no) + '">编辑</button> ' +
           '<button class="mini-btn" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) +
           '" data-class="' + esc(s.class_name) + '">设置班级</button> ' +
           '<button class="mini-btn danger" data-del="' + esc(s.id) + '" data-name="' + esc(s.name) + '">移除</button>' +
@@ -285,6 +288,9 @@
     table.innerHTML = html;
     table.querySelectorAll('button[data-id]').forEach((btn) => {
       btn.addEventListener('click', () => editStudentClass(btn));
+    });
+    table.querySelectorAll('button[data-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => openEditStudent(btn));
     });
     table.querySelectorAll('button[data-del]').forEach((btn) => {
       btn.addEventListener('click', () => removeStudent(btn));
@@ -328,6 +334,43 @@
     } else {
       alert((res && res.msg) || '移除失败');
     }
+  }
+
+  // 编辑单条名册记录（学校 / 班级 / 姓名 / 学号）
+  function openEditStudent(btn) {
+    const d = btn.dataset;
+    openModal('编辑学生',
+      '<div class="form-grid">' +
+        '<div class="fld"><label>学校 <i>*</i></label><input id="eSchool" class="filter-input" value="' + esc(d.school || '') + '" /></div>' +
+        '<div class="fld"><label>班级</label><input id="eClass" class="filter-input" value="' + esc(d.class || '') + '" /></div>' +
+        '<div class="fld"><label>姓名 <i>*</i></label><input id="eName" class="filter-input" value="' + esc(d.name || '') + '" /></div>' +
+        '<div class="fld"><label>学号 <i>*</i></label><input id="eNo" class="filter-input" value="' + esc(d.no || '') + '" /></div>' +
+      '</div>' +
+      '<div class="hint">判重规则：同一「学号 + 姓名」不能重复。</div>' +
+      '<div id="eErr" class="form-err"></div>',
+      '<button class="mini-btn" id="eCancel">取消</button>' +
+      '<button class="login-btn filter-btn" id="eSave">保存</button>');
+
+    $('eCancel').addEventListener('click', closeModal);
+    $('eSave').addEventListener('click', async () => {
+      $('eErr').textContent = '';
+      $('eSave').disabled = true;
+      const res = await api.updateStudent({
+        doc_id: d.edit,
+        school: $('eSchool').value.trim(),
+        class_name: $('eClass').value.trim(),
+        name: $('eName').value.trim(),
+        student_no: $('eNo').value.trim()
+      });
+      $('eSave').disabled = false;
+      if (res && res.ok) {
+        closeModal();
+        await loadStudents();
+      } else {
+        $('eErr').textContent = (res && res.msg) || '保存失败';
+      }
+    });
+    setTimeout(() => { const el = $('eName'); if (el) el.focus(); }, 50);
   }
 
   function fmtDate(iso) {
