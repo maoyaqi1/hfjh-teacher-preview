@@ -599,8 +599,7 @@
   // ---- 学生详情 ----
   function hashParam(name) {
     const h = location.hash || '';
-    const q = h.indexOf('?') >= 0 ? h.slice(h.indexOf('?') + 1) : '';
-    const m = new RegExp('[?&]' + name + '=([^&]*)').exec(q);
+    const m = new RegExp('[?&]' + name + '=([^&]*)').exec(h);
     return m ? decodeURIComponent(m[1]) : '';
   }
 
