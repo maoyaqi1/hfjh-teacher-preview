@@ -370,3 +370,16 @@ button {
 .page-sub .ok, td .ok { color: #1a9a4b; font-weight: 600; }
 .page-sub .err { color: var(--danger); font-weight: 600; }
 td .pending { color: #c98a12; font-weight: 600; }
+
+/* ---- 选项卡 ---- */
+.tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.tab {
+  padding: 9px 18px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-soft);
+  font-size: 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.tab.active { background: var(--brand); color: #fff; border-color: var(--brand); font-weight: 600; }

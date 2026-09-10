@@ -190,12 +190,19 @@
   }
 
   // ---- 学生管理 ----
-  const studentFilter = { keyword: '', school: '', class_name: '', registered: '' };
+  const studentFilter = { source: 'roster', keyword: '', school: '', class_name: '', registered: '', owner_teacher_id: '' };
 
   async function renderStudents(container) {
+    const superUser = isSuper();
     container.innerHTML =
       '<div class="page-title">学生管理</div>' +
-      '<div class="page-sub">名册 <b id="stuSumTotal">--</b> 人　·　已注册 <b id="stuSumReg" class="ok">--</b> 人　·　未注册 <b id="stuSumUnreg" class="err">--</b> 人</div>' +
+      '<div class="page-sub" id="stuSumLine">—</div>' +
+      (superUser
+        ? '<div class="tabs">' +
+            '<button class="tab" data-src="roster">名册学生（教师录入）</button>' +
+            '<button class="tab" data-src="registered">未入册学生（自主注册）</button>' +
+          '</div>'
+        : '') +
       '<div class="card">' +
         '<div class="tool-row">' +
           '<button class="login-btn filter-btn" id="stuAdd">+ 新增学生</button>' +
@@ -206,6 +213,7 @@
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
           '<select id="stuSchool" class="filter-select"></select>' +
           '<select id="stuClass" class="filter-select"></select>' +
+          (superUser ? '<select id="stuOwner" class="filter-select"></select>' : '') +
           '<select id="stuReg" class="filter-select">' +
             '<option value="">全部状态</option>' +
             '<option value="no">未注册</option>' +
@@ -226,14 +234,39 @@
       studentFilter.school = $('stuSchool').value;
       studentFilter.class_name = $('stuClass').value;
       studentFilter.registered = $('stuReg').value;
+      if (superUser && $('stuOwner')) studentFilter.owner_teacher_id = $('stuOwner').value;
       loadStudents();
     });
     $('stuKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('stuSearch').click(); });
     $('stuSchool').addEventListener('change', () => $('stuSearch').click());
     $('stuClass').addEventListener('change', () => $('stuSearch').click());
     $('stuReg').addEventListener('change', () => $('stuSearch').click());
+    if (superUser && $('stuOwner')) $('stuOwner').addEventListener('change', () => $('stuSearch').click());
+
+    // 来源切换（名册 / 未入册自主注册）
+    container.querySelectorAll('.tab').forEach((tab) => {
+      tab.classList.toggle('active', tab.dataset.src === studentFilter.source);
+      tab.addEventListener('click', () => {
+        studentFilter.source = tab.dataset.src;
+        container.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
+        syncStudentFilterVisibility();
+        loadStudents();
+      });
+    });
+    syncStudentFilterVisibility();
 
     await loadStudents();
+  }
+
+  // 未入册视图下隐藏「班级 / 归属教师 / 注册状态」等不适用筛选项
+  function syncStudentFilterVisibility() {
+    const isReg = studentFilter.source === 'registered';
+    ['stuClass', 'stuReg'].forEach((id) => {
+      const el = $(id);
+      if (el && el.parentNode) el.style.display = isReg ? 'none' : '';
+    });
+    const owner = $('stuOwner');
+    if (owner && owner.parentNode) owner.style.display = isReg ? 'none' : '';
   }
 
   async function loadStudents() {
@@ -247,16 +280,31 @@
       return;
     }
 
+    const isReg = (res.source || studentFilter.source) === 'registered';
+    const superUser = isSuper();
+
     fillSelect($('stuSchool'), res.schools || [], '全部学校', studentFilter.school);
     fillSelect($('stuClass'), res.classes || [], '全部班级', studentFilter.class_name);
+    if (superUser && $('stuOwner')) {
+      let ownHtml = '<option value="">全部录入教师</option>';
+      (res.owners || []).forEach((o) => {
+        ownHtml += '<option value="' + esc(o.id) + '">' + esc(o.name) + '</option>';
+      });
+      $('stuOwner').innerHTML = ownHtml;
+      $('stuOwner').value = studentFilter.owner_teacher_id || '';
+    }
+
     const sum = res.summary || { total: 0, registered: 0, unregistered: 0 };
-    $('stuSumTotal').textContent = sum.total;
-    $('stuSumReg').textContent = sum.registered;
-    $('stuSumUnreg').textContent = sum.unregistered;
+    $('stuSumLine').innerHTML = isReg
+      ? '未入册（自主注册）<b>' + sum.total + '</b> 人　·　这些学生不在教师名册中（不能使用 AI 教师提问），其学习数据仍可用于分析'
+      : '名册 <b>' + sum.total + '</b> 人　·　已注册 <b class="ok">' + sum.registered +
+        '</b> 人　·　未注册 <b class="err">' + sum.unregistered + '</b> 人';
 
     const items = res.items || [];
+    const showOwner = superUser && !isReg;
     let html = '<tr style="background:var(--panel-soft);text-align:left">' +
       '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>班级</th>' +
+      (showOwner ? '<th>录入教师</th>' : '') +
       '<th>注册状态</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
 
     items.forEach((s) => {
@@ -266,24 +314,28 @@
       const reg = s.registered
         ? '<span class="ok">已注册</span>'
         : '<span class="pending">未注册</span>';
+      const ops = isReg
+        ? '<span style="color:#9aa5b2">自主注册</span>'
+        : '<button class="mini-btn" data-edit="' + esc(s.id) + '"' +
+            ' data-school="' + esc(s.school) + '" data-class="' + esc(s.class_name) + '"' +
+            ' data-name="' + esc(s.name) + '" data-no="' + esc(s.student_no) + '">编辑</button> ' +
+          '<button class="mini-btn" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) +
+          '" data-class="' + esc(s.class_name) + '">设置班级</button> ' +
+          '<button class="mini-btn danger" data-del="' + esc(s.id) + '" data-name="' + esc(s.name) + '">移除</button>';
       html += '<tr style="border-top:1px solid var(--border)">' +
         '<td style="padding:10px">' + esc(s.name) + '</td>' +
         '<td>' + esc(s.student_no) + '</td>' +
         '<td>' + esc(s.school) + '</td>' +
         '<td>' + cls + '</td>' +
+        (showOwner ? '<td style="color:#6a7688">' + esc(s.owner_teacher_name || '—') + '</td>' : '') +
         '<td>' + reg + '</td>' +
         '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
-        '<td style="text-align:right">' +
-          '<button class="mini-btn" data-edit="' + esc(s.id) + '"' +
-            ' data-school="' + esc(s.school) + '" data-class="' + esc(s.class_name) + '"' +
-            ' data-name="' + esc(s.name) + '" data-no="' + esc(s.student_no) + '">编辑</button> ' +
-          '<button class="mini-btn" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) +
-          '" data-class="' + esc(s.class_name) + '">设置班级</button> ' +
-          '<button class="mini-btn danger" data-del="' + esc(s.id) + '" data-name="' + esc(s.name) + '">移除</button>' +
-        '</td></tr>';
+        '<td style="text-align:right">' + ops + '</td></tr>';
     });
+    const colCount = showOwner ? 8 : 7;
     if (!items.length) {
-      html += '<tr><td colspan="7" style="padding:26px;text-align:center;color:#9aa5b2">没有匹配的学生</td></tr>';
+      html += '<tr><td colspan="' + colCount + '" style="padding:26px;text-align:center;color:#9aa5b2">' +
+        (isReg ? '没有未入册的自主注册学生' : '没有匹配的学生') + '</td></tr>';
     }
     table.innerHTML = html;
     table.querySelectorAll('button[data-id]').forEach((btn) => {
