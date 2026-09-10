@@ -59,11 +59,23 @@
         $('loginError').textContent = (res && res.msg) || '登录失败，请重试';
       }
     } catch (e) {
-      $('loginError').textContent = '登录失败：' + describeError(e);
+      showLoginError(e);
     } finally {
       $('loginBtn').disabled = false;
       $('loginBtn').textContent = '登 录';
     }
+  }
+
+  // 把错误渲染到登录页；网络类失败给出「先确认访问网关」的可点击引导
+  function showLoginError(e) {
+    const box = $('loginError');
+    if (e && e.code === 'NETWORK' && e.gateway) {
+      box.innerHTML = '登录失败：无法连接服务器。若为首次使用，请先 ' +
+        '<a href="' + esc(e.gateway) + '" target="_blank" rel="noopener">点此确认访问</a>' +
+        '，页面出现 JSON 提示后再回来登录。';
+      return;
+    }
+    box.textContent = '登录失败：' + describeError(e);
   }
 
   async function handleLogout() {
@@ -140,18 +152,36 @@
     });
     html += '</div>';
 
-    // 近 7 天趋势
-    html += '<div class="card"><div class="card-title">近 7 天学习趋势</div><div class="trend">';
-    (d.trend || []).forEach((t) => {
-      html += '<div class="trend-item"><div class="trend-bars">' +
-        '<div class="bar plp" style="height:' + (t.plp * 8) + 'px"></div>' +
-        '<div class="bar active" style="height:' + (t.active * 8) + 'px"></div>' +
-        '</div><div class="trend-date">' + t.date + '</div></div>';
-    });
-    html += '</div><div class="trend-legend">' +
-      '<span><span class="lg plp"></span>点线面</span>' +
-      '<span><span class="lg active"></span>活跃人数</span>' +
-      '</div></div>';
+    // 近 7 天趋势：按当周最大值等比缩放，避免数值大时柱子溢出卡片
+    const trend = d.trend || [];
+    const BAR_MAX = 150;
+    const peak = trend.reduce((m, t) => Math.max(m, t.plp || 0, t.active || 0), 0);
+    const barHeight = (v) => {
+      const n = v || 0;
+      if (n <= 0) return 0;
+      if (peak <= 0) return 0;
+      return Math.max(3, Math.round((n / peak) * BAR_MAX));
+    };
+    html += '<div class="card"><div class="card-title">近 7 天学习趋势</div>';
+    if (!trend.length) {
+      html += '<div class="chart-empty">暂无数据</div>';
+    } else {
+      html += '<div class="trend">';
+      trend.forEach((t) => {
+        html += '<div class="trend-item">' +
+          '<div class="trend-bars">' +
+            '<div class="bar plp" style="height:' + barHeight(t.plp) + 'px"></div>' +
+            '<div class="bar active" style="height:' + barHeight(t.active) + 'px"></div>' +
+          '</div>' +
+          '<div class="trend-date">' + t.date + '</div>' +
+        '</div>';
+      });
+      html += '</div><div class="trend-legend">' +
+        '<span><span class="lg plp"></span>点线面</span>' +
+        '<span><span class="lg active"></span>活跃人数</span>' +
+        '</div>';
+    }
+    html += '</div>';
     container.innerHTML = html;
     if (!dash || !dash.ok) {
       container.insertAdjacentHTML('beforeend',
@@ -267,6 +297,9 @@
     $('loginBtn').addEventListener('click', handleLogin);
     $('loginPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLogin(); });
     $('logoutBtn').addEventListener('click', handleLogout);
+    // 登录页底部的「确认访问」入口指向网关地址
+    const gatewayLink = $('gatewayLink');
+    if (gatewayLink && CFG.gatewayUrl) gatewayLink.href = CFG.gatewayUrl;
     window.addEventListener('hashchange', () => {
       if (!$('appView').classList.contains('hidden')) { renderSidebar(); renderRoute(); }
     });

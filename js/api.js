@@ -14,11 +14,21 @@
   async function callTeacher(action, payload) {
     const token = localStorage.getItem(CFG.tokenKey || 'hfjh_teacher_token') || '';
     const data = Object.assign({}, payload || {}, { action, token });
-    const res = await fetch(gatewayUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
+    const url = gatewayUrl();
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    } catch (e) {
+      // 浏览器层失败：跨域被拦、网络不通，或首次访问尚未通过网关的「页面访问提示」
+      const err = new Error('无法连接服务器');
+      err.code = 'NETWORK';
+      err.gateway = url;
+      throw err;
+    }
     let result;
     try {
       result = await res.json();
