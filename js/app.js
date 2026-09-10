@@ -365,7 +365,7 @@
   async function adoptRegisteredStudent(btn) {
     const userId = btn.dataset.adopt;
     const name = btn.dataset.name;
-    const className = prompt('把「' + name + '」加入我的名册，并设置班级（可留空）：', '');
+    const className = prompt('把「' + name + '」加入我的名册，并设置班级（可留空）：\n\n收编后该学号将自动开通 AI 教师提问权限。', '');
     if (className === null) return;
     const res = await api.adoptStudent({ user_id: userId, class_name: className });
     if (res && res.ok) {
@@ -378,7 +378,7 @@
   async function removeStudent(btn) {
     const id = btn.dataset.del;
     const name = btn.dataset.name;
-    if (!confirm('确定从名册中移除「' + name + '」吗？\n（只移除教师名册记录，不影响该学生已注册的微信账号）')) return;
+    if (!confirm('确定从名册中移除「' + name + '」吗？\n\n将同时撤销该学号的 AI 教师提问权限。\n（不影响该学生已注册的微信账号）')) return;
     const res = await api.deleteStudent(id);
     if (res && res.ok) {
       await loadStudents();
@@ -465,6 +465,7 @@
         '<div class="fld"><label>姓名 <i>*</i></label><input id="fName" class="filter-input" placeholder="学生姓名" /></div>' +
         '<div class="fld"><label>学号 <i>*</i></label><input id="fNo" class="filter-input" placeholder="学号（唯一）" /></div>' +
       '</div>' +
+      '<div class="hint">保存后该学号将自动开通 AI 教师提问权限。</div>' +
       '<div id="fErr" class="form-err"></div>',
       '<button class="mini-btn" id="fCancel">取消</button>' +
       '<button class="login-btn filter-btn" id="fSave">保存</button>');
@@ -527,7 +528,8 @@
   // ---- 批量导入 ----
   function openImportStudents() {
     openModal('批量导入学生',
-      '<p class="hint">按模板填写 CSV（表头：学校,班级,姓名,学号）。可先下载模板。</p>' +
+      '<p class="hint">按模板填写 CSV（表头：学校,班级,姓名,学号）。可先下载模板。<br>' +
+      '导入成功后，这些学号会自动开通 AI 教师提问权限。</p>' +
       '<div class="fld"><label>选择 CSV 文件</label><input type="file" id="impFile" accept=".csv,text/csv" /></div>' +
       '<div class="fld"><label>或直接粘贴内容（每行一条，逗号分隔）</label>' +
       '<textarea id="impText" class="filter-input imp-text" placeholder="安徽建筑大学,机械2401,张三,20240001"></textarea></div>' +
