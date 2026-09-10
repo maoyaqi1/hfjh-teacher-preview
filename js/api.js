@@ -70,6 +70,9 @@
     deleteStudent(docId) {
       return callTeacher('student.delete', { doc_id: docId });
     },
+    adoptStudent(payload) {
+      return callTeacher('student.adopt', payload);
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },

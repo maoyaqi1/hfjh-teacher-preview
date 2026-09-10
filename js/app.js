@@ -315,12 +315,11 @@
         ? '<span class="ok">已注册</span>'
         : '<span class="pending">未注册</span>';
       const ops = isReg
-        ? '<span style="color:#9aa5b2">自主注册</span>'
+        ? '<button class="mini-btn" data-adopt="' + esc(s.id) + '" data-name="' + esc(s.name) +
+          '">设置班级</button>'
         : '<button class="mini-btn" data-edit="' + esc(s.id) + '"' +
             ' data-school="' + esc(s.school) + '" data-class="' + esc(s.class_name) + '"' +
             ' data-name="' + esc(s.name) + '" data-no="' + esc(s.student_no) + '">编辑</button> ' +
-          '<button class="mini-btn" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) +
-          '" data-class="' + esc(s.class_name) + '">设置班级</button> ' +
           '<button class="mini-btn danger" data-del="' + esc(s.id) + '" data-name="' + esc(s.name) + '">移除</button>';
       html += '<tr style="border-top:1px solid var(--border)">' +
         '<td style="padding:10px">' + esc(s.name) + '</td>' +
@@ -338,14 +337,14 @@
         (isReg ? '没有未入册的自主注册学生' : '没有匹配的学生') + '</td></tr>';
     }
     table.innerHTML = html;
-    table.querySelectorAll('button[data-id]').forEach((btn) => {
-      btn.addEventListener('click', () => editStudentClass(btn));
-    });
     table.querySelectorAll('button[data-edit]').forEach((btn) => {
       btn.addEventListener('click', () => openEditStudent(btn));
     });
     table.querySelectorAll('button[data-del]').forEach((btn) => {
       btn.addEventListener('click', () => removeStudent(btn));
+    });
+    table.querySelectorAll('button[data-adopt]').forEach((btn) => {
+      btn.addEventListener('click', () => adoptRegisteredStudent(btn));
     });
   }
 
@@ -362,17 +361,17 @@
     sel.value = current || '';
   }
 
-  async function editStudentClass(btn) {
-    const id = btn.dataset.id;
+  // 未入册学生 → 收进当前教师名册并指定班级
+  async function adoptRegisteredStudent(btn) {
+    const userId = btn.dataset.adopt;
     const name = btn.dataset.name;
-    const current = btn.dataset.class || '';
-    const value = prompt('为「' + name + '」设置班级（留空表示不设班级）：', current);
-    if (value === null) return;
-    const res = await api.updateStudent({ doc_id: id, class_name: value });
+    const className = prompt('把「' + name + '」加入我的名册，并设置班级（可留空）：', '');
+    if (className === null) return;
+    const res = await api.adoptStudent({ user_id: userId, class_name: className });
     if (res && res.ok) {
       await loadStudents();
     } else {
-      alert((res && res.msg) || '保存失败');
+      alert((res && res.msg) || '操作失败');
     }
   }
 
