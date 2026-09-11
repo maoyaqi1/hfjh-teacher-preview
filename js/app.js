@@ -265,8 +265,6 @@
 
   // ---- 学生管理 ----
   const studentFilter = { source: 'roster', keyword: '', school: '', class_name: '', registered: '', owner_teacher_id: '' };
-  // 最近一次加载到的候选班级（名册中已出现过的班级，由服务端去重排序）
-  let studentClassOptions = [];
   // 列表分页与「批量删除」选择态
   const studentPage = { page: 1, size: 20 };
   let studentItemsCache = [];
@@ -381,11 +379,11 @@
     const isReg = (res.source || studentFilter.source) === 'registered';
     const superUser = isSuper();
     studentIsReg = isReg;
-    studentShowOwner = superUser && !isReg;
+    // 录入教师列：超管在两种视图都显示（白名单以外的人显示「无」）
+    studentShowOwner = superUser;
 
     fillSelect($('stuSchool'), res.schools || [], '全部学校', studentFilter.school);
     fillSelect($('stuClass'), res.classes || [], '全部班级', studentFilter.class_name);
-    studentClassOptions = (res.classes || []).slice();
     if (superUser && $('stuOwner')) {
       let ownHtml = '<option value="">全部录入教师</option>';
       (res.owners || []).forEach((o) => {
@@ -397,7 +395,8 @@
 
     const sum = res.summary || { total: 0, registered: 0, unregistered: 0 };
     $('stuSumLine').innerHTML = isReg
-      ? '未入册（自主注册）<b>' + sum.total + '</b> 人　·　这些学生不在教师名册中（不能使用 AI 教师提问），其学习数据仍可用于分析'
+      ? '白名单以外（自主注册，未入任何班级）<b>' + sum.total + '</b> 人　·　他们可以使用互动工具，' +
+        '但不能使用 AI 教师提问；由对应老师在自己的班级里录入该学生后，AI 提问权限会自动开通'
       : '名册 <b>' + sum.total + '</b> 人　·　已注册 <b class="ok">' + sum.registered +
         '</b> 人　·　未注册 <b class="err">' + sum.unregistered + '</b> 人';
 
@@ -439,8 +438,7 @@
         ? '<span class="ok">已注册</span>'
         : '<span class="pending">未注册</span>';
       const ops = studentIsReg
-        ? '<button class="mini-btn" data-adopt="' + esc(s.id) + '" data-name="' + esc(s.name) +
-          '">设置班级</button>'
+        ? '<span style="color:#9aa5b2">白名单以外</span>'
         : '<button class="mini-btn" data-edit="' + esc(s.id) + '"' +
             ' data-school="' + esc(s.school) + '" data-class="' + esc(s.class_name) + '"' +
             ' data-name="' + esc(s.name) + '" data-no="' + esc(s.student_no) + '">编辑</button> ' +
@@ -455,7 +453,7 @@
         '<td>' + esc(s.student_no) + '</td>' +
         '<td>' + esc(s.school) + '</td>' +
         '<td>' + cls + '</td>' +
-        (showOwner ? '<td style="color:#6a7688">' + esc(s.owner_teacher_name || '—') + '</td>' : '') +
+        (showOwner ? '<td style="color:#6a7688">' + esc(s.owner_teacher_name || '无') + '</td>' : '') +
         '<td>' + reg + '</td>' +
         '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
         '<td style="text-align:right">' + ops + '</td></tr>';
@@ -471,9 +469,6 @@
     });
     table.querySelectorAll('button[data-del]').forEach((btn) => {
       btn.addEventListener('click', () => removeStudent(btn));
-    });
-    table.querySelectorAll('button[data-adopt]').forEach((btn) => {
-      btn.addEventListener('click', () => adoptRegisteredStudent(btn));
     });
     table.querySelectorAll('.stu-pick').forEach((box) => {
       box.addEventListener('change', () => {
@@ -531,47 +526,6 @@
     }
     sel.innerHTML = html;
     sel.value = current || '';
-  }
-
-  // 未入册学生 → 收进当前教师名册并指定班级
-  // 班级为严格下拉（REQ-001）：候选来自名册中已出现过的班级，不可手输；首项「未分班（留空）」。
-  // 新班级的录入入口仍是「名册学生」的「新增学生 / 编辑」弹窗，本入口只做收编。
-  function adoptRegisteredStudent(btn) {
-    const userId = btn.dataset.adopt;
-    const name = btn.dataset.name;
-
-    let options = '<option value="">未分班（留空）</option>';
-    studentClassOptions.forEach((c) => {
-      options += '<option value="' + esc(c) + '">' + esc(c) + '</option>';
-    });
-
-    const emptyHint = studentClassOptions.length
-      ? ''
-      : '<div class="form-err">名册中还没有任何班级。可先选「未分班（留空）」完成收编；' +
-        '如需分班，请先在「名册学生」的「新增学生 / 编辑」里录入班级。</div>';
-
-    openModal('设置班级',
-      '<div class="fld"><label>班级</label><select id="aClass" class="filter-select">' + options + '</select></div>' +
-      '<div class="hint">将「' + esc(name) + '」加入我的名册，并自动开通 AI 教师提问权限。<br />' +
-      '班级只能从已有班级中选择；新班级请先到「名册学生 → 新增学生 / 编辑」录入。</div>' +
-      emptyHint +
-      '<div id="aErr" class="form-err"></div>',
-      '<button class="mini-btn" id="aCancel">取消</button>' +
-      '<button class="login-btn filter-btn" id="aConfirm">确定</button>');
-
-    $('aCancel').addEventListener('click', closeModal);
-    $('aConfirm').addEventListener('click', async () => {
-      $('aErr').textContent = '';
-      $('aConfirm').disabled = true;
-      const res = await api.adoptStudent({ user_id: userId, class_name: $('aClass').value });
-      $('aConfirm').disabled = false;
-      if (res && res.ok) {
-        closeModal();
-        await loadStudents();
-      } else {
-        $('aErr').textContent = (res && res.msg) || '操作失败';
-      }
-    });
   }
 
   async function removeStudent(btn) {
