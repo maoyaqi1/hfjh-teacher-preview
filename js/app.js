@@ -890,17 +890,20 @@
   }
 
   // ---- 批量导入 ----
-  async function openImportStudents() {
+  async function openImportStudents(forcedClass) {
     await refreshTeacherClasses();
-    const classField = teacherClassOptions.length
+    const forcedId = forcedClass && forcedClass.id ? String(forcedClass.id) : '';
+    const classField = forcedId
+      ? '<div class="hint">本次导入的学生全部归入「' + esc(forcedClass.name || '') + '」，文件里的班级名会被忽略。</div>'
+      : (teacherClassOptions.length
       ? '<div class="fld"><label>导入到班级</label><select id="impClass" class="filter-select">' +
           '<option value="">按文件里的班级名自动归并</option>' +
           teacherClassOptions.map((c) => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join('') +
           '<option value="__none__">全部保持未分班</option>' +
         '</select>' +
         '<div class="hint" style="margin:0">自动归并：与班级同名的优先归入；若你只有一个班级，文件里其它班级名也会并入该班。</div></div>'
-      : '';
-    openModal('批量导入学生',
+      : '');
+    openModal(forcedId ? ('批量导入到「' + (forcedClass.name || '') + '」') : '批量导入学生',
       '<p class="hint">按模板填写 CSV（表头：学校,班级,姓名,学号）。可先下载模板。<br>' +
       '导入成功后，这些学号会自动开通 AI 教师提问权限；表头顺序不限，系统按列名识别。</p>' +
       classField +
@@ -915,6 +918,7 @@
     let pendingRows = null;
 
     const classPayload = () => {
+      if (forcedId) return { class_id: forcedId };
       const el = $('impClass');
       if (!el || !el.value) return {};
       if (el.value === '__none__') return { no_class: true };
@@ -970,9 +974,13 @@
       $('impCommit').disabled = true;
       const res = await api.importStudents(Object.assign({ mode: 'commit', rows: pendingRows }, classPayload()));
       if (res && res.ok) {
-        alert('导入完成：新增 ' + res.added + ' 条');
+        const s = res.summary || {};
+        alert('导入完成：新增 ' + res.added + ' 条' +
+          (s.class_assigned ? '，其中 ' + s.class_assigned + ' 条归入班级' + (s.class_name ? '「' + s.class_name + '」' : '') : '') +
+          (s.class_unmatched ? '，' + s.class_unmatched + ' 条未匹配班级（保持未分班）' : ''));
         closeModal();
-        await loadStudents();
+        if (forcedId) await renderRoute();
+        else await loadStudents();
       } else {
         alert((res && res.msg) || '导入失败');
         $('impCommit').disabled = false;
@@ -1393,10 +1401,14 @@
       '</div>' +
       '<div class="card">' +
         '<div class="tool-row">' +
-          (archived ? '' : '<button class="login-btn filter-btn" id="cdAdd">+ 添加学生</button>') +
+          (archived ? '' : '<button class="login-btn filter-btn" id="cdNew">+ 新录入学生</button>') +
+          (archived ? '' : '<button class="mini-btn" id="cdImport">批量导入到本班</button>') +
+          (archived ? '' : '<button class="mini-btn" id="cdAdd">从名册添加</button>') +
           (archived ? '' : '<button class="mini-btn" id="cdSync">从名册并入</button>') +
           '<button class="mini-btn" id="cdBack">返回班级列表</button>' +
         '</div>' +
+        (archived ? '' : '<div class="hint" style="margin:0 0 8px">录入新学生请用前两个按钮（会自动归入本班并开通 AI 提问权限）；' +
+          '「从名册添加」用于把名册里已有的学生选进本班，「从名册并入」用于修复历史数据。</div>') +
         '<div class="page-sub" style="margin:0 0 8px">学生名单 <b>' + members.length + '</b> 人</div>' +
         '<table id="cdTable" style="width:100%;border-collapse:collapse"></table>' +
         '<div class="pager" id="cdPager"></div>' +
@@ -1406,6 +1418,10 @@
     if (backBtn) backBtn.addEventListener('click', () => { location.hash = '#/classes'; });
     const addBtn = $('cdAdd');
     if (addBtn) addBtn.addEventListener('click', () => openAddClassMembers(classId, c.name || ''));
+    const newBtn = $('cdNew');
+    if (newBtn) newBtn.addEventListener('click', () => openAddClassStudent(classId, c.name || ''));
+    const importBtn = $('cdImport');
+    if (importBtn) importBtn.addEventListener('click', () => openImportStudents({ id: classId, name: c.name || '' }));
     const syncBtn = $('cdSync');
     if (syncBtn) syncBtn.addEventListener('click', () => openSyncMembers(classId, c.name || ''));
     classMembersCache = members;
@@ -1527,6 +1543,43 @@
 
   // 移出学生：确认后调用服务端，成功刷新详情
   // 从名册并入：把名册中已存在但未关联到本班的学生补进来（修复"先建班级、后从学生页录入"造成的历史数据）
+  // 新录入学生并直接归入本班（班级优先的录入路径，不再需要去学生页录）
+  function openAddClassStudent(classId, className) {
+    openModal('新录入学生到「' + className + '」',
+      '<div class="hint">保存后该学生进入本班名册，并自动开通 AI 教师提问权限。</div>' +
+      '<div class="form-grid">' +
+        '<div class="fld"><label>学校 <i>*</i></label>' +
+          '<input id="cnSchool" class="filter-input" placeholder="如 安徽建筑大学" /></div>' +
+        '<div class="fld"><label>班级</label>' +
+          '<input class="filter-input" value="' + esc(className) + '" disabled /></div>' +
+        '<div class="fld"><label>姓名 <i>*</i></label>' +
+          '<input id="cnName" class="filter-input" placeholder="学生姓名" /></div>' +
+        '<div class="fld"><label>学号 <i>*</i></label>' +
+          '<input id="cnNo" class="filter-input" placeholder="学号（纯数字）" /></div>' +
+      '</div>' +
+      '<div id="cnErr" class="form-err"></div>',
+      '<button class="mini-btn" id="cnCancel">取消</button>' +
+      '<button class="login-btn filter-btn" id="cnSave">保存</button>');
+
+    $('cnCancel').addEventListener('click', closeModal);
+    $('cnSave').addEventListener('click', async () => {
+      $('cnErr').textContent = '';
+      const name = $('cnName').value.trim();
+      const no = $('cnNo').value.trim();
+      const school = $('cnSchool').value.trim();
+      if (!school) { $('cnErr').textContent = '请填写学校'; return; }
+      const identErr = studentIdentityError(name, no);
+      if (identErr) { $('cnErr').textContent = identErr; return; }
+      $('cnSave').disabled = true;
+      const res = await api.createStudent({ school, name, student_no: no, class_id: classId });
+      $('cnSave').disabled = false;
+      if (!res || !res.ok) { $('cnErr').textContent = classErrText(res, '保存失败'); return; }
+      closeModal();
+      await renderRoute();
+    });
+    setTimeout(() => { const el = $('cnSchool'); if (el) el.focus(); }, 50);
+  }
+
   async function openSyncMembers(classId, className) {
     const first = await api.syncClassMembers({ class_id: classId, dry_run: true });
     if (!first || !first.ok) { alert(classErrText(first, '预览失败')); return; }
