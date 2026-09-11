@@ -194,6 +194,7 @@
         '<div class="tool-row">' +
           '<button class="mini-btn" id="personPreviewBtn">预览选中人的数据</button>' +
           '<button class="mini-btn danger" id="personPurgeBtn">清理选中的人…</button>' +
+          '<button class="mini-btn" id="legacyRosterBtn">清理无姓名的旧白名单…</button>' +
         '</div>' +
         '<div id="personResult"></div></div>';
 
@@ -224,6 +225,7 @@
       });
       $('personPreviewBtn').addEventListener('click', () => previewPersonPurge(false));
       $('personPurgeBtn').addEventListener('click', () => previewPersonPurge(true));
+      $('legacyRosterBtn').addEventListener('click', legacyRosterFlow);
       $('resetPreviewBtn').addEventListener('click', previewResetData);
       $('resetRunBtn').addEventListener('click', confirmResetData);
       await loadPersonList(false);
@@ -298,6 +300,7 @@
       sourceTags.push(r.has_account ? '账号' : '无账号');
       if (r.in_class_roster) sourceTags.push('名册');
       if (r.in_roster) sourceTags.push('白名单');
+      if (r.nameless_roster) sourceTags.push('旧记录·无姓名');
       html += '<tr>' +
         '<td style="padding:6px"><input type="checkbox" data-key="' + esc(r.key) + '"' + (personSelected.has(r.key) ? ' checked' : '') + ' /></td>' +
         '<td style="padding:6px">' + esc(r.name || '—') + '</td>' +
@@ -384,6 +387,50 @@
       });
       html += '<div class="hint" style="margin-top:10px">已记入 maintenance_logs；回到「驾驶舱」刷新可见新的统计口径。</div>';
       out.innerHTML = html;
+      personSelected.clear();
+      await loadPersonList(false);
+    });
+  }
+
+  // 清理"只有学号、没有姓名"的历史白名单记录（早期按学号批量导入产生，现在已无放行作用）
+  async function legacyRosterFlow() {
+    const out = $('personResult');
+    out.innerHTML = '<div class="hint">正在统计…</div>';
+    const pre = await api.legacyRosterCleanup({ dry_run: true });
+    if (!pre || !pre.ok) {
+      out.innerHTML = '<div class="form-err">统计失败：' + esc((pre && pre.msg) || '未知错误') + '</div>';
+      return;
+    }
+    const total = pre.total || 0;
+    if (!total) {
+      out.innerHTML = '<div class="hint">没有无姓名的旧白名单记录。</div>';
+      return;
+    }
+    const bySource = Object.keys(pre.by_source || {}).map((k) => esc(k) + '：' + pre.by_source[k] + ' 条').join('　');
+    out.innerHTML = '<div class="hint">待清理 <b>' + total + '</b> 条无姓名的旧白名单记录（' + bySource + '）' +
+      '<br>示例学号：' + esc((pre.sample || []).slice(0, 12).join('、')) + '</div>';
+    openModal('确认清理无姓名的旧白名单',
+      '<div class="hint">将删除 <b>' + total + '</b> 条"只有学号、没有姓名"的白名单记录（' + bySource + '）。' +
+      '这类记录来自早期的按学号批量导入，在当前"学号 + 姓名"核对规则下不再有任何放行作用，删除不会影响任何学生正常提问。</div>' +
+      '<div class="hint" style="margin:12px 0 6px">请输入条数 <b>' + total + '</b> 以确认：</div>' +
+      '<div class="fld"><input class="filter-input" id="legacyConfirmInput" placeholder="输入 ' + total + '" /></div>',
+      '<button class="mini-btn" id="legacyCancelBtn">取消</button>' +
+      '<button class="mini-btn danger" id="legacyConfirmBtn">确认清理</button>');
+    $('legacyCancelBtn').addEventListener('click', closeModal);
+    $('legacyConfirmBtn').addEventListener('click', async () => {
+      const el = $('legacyConfirmInput');
+      if (String((el && el.value) || '').trim() !== String(total)) {
+        alert('输入的条数与待清理条数不一致（应为 ' + total + '），已取消');
+        return;
+      }
+      const res = await api.legacyRosterCleanup({ dry_run: false, confirm_count: total });
+      closeModal();
+      const box = $('personResult');
+      if (!res || !res.ok) {
+        box.innerHTML = '<div class="form-err">清理失败：' + esc((res && res.msg) || '未知错误') + '</div>';
+        return;
+      }
+      box.innerHTML = '<div class="hint">已清理 <b>' + (res.removed || 0) + '</b> 条旧白名单记录，已记入 maintenance_logs。</div>';
       personSelected.clear();
       await loadPersonList(false);
     });

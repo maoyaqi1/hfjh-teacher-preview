@@ -140,6 +140,10 @@
     purgePersonData(payload) {
       return callTeacher('data.personPurge', payload || {});
     },
+    // 历史遗留：清理"只有学号、没有姓名"的旧白名单记录（早期按学号批量导入产生）
+    legacyRosterCleanup(payload) {
+      return callTeacher('data.legacyRoster', payload || {});
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },
