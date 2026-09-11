@@ -468,6 +468,26 @@ td .pending { color: #c98a12; font-weight: 600; }
 }
 
 /* ---- 班级管理：添加学生候选列表（REQ-002 第一阶段）---- */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.pager-info { font-size: 13px; color: var(--text-soft); }
+.pager-size { width: auto; }
+.purge-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+  font-size: 13px;
+}
+.purge-bar.hidden { display: none; }
 .pick-list {
   max-height: 320px;
   overflow-y: auto;

@@ -267,6 +267,13 @@
   const studentFilter = { source: 'roster', keyword: '', school: '', class_name: '', registered: '', owner_teacher_id: '' };
   // 最近一次加载到的候选班级（名册中已出现过的班级，由服务端去重排序）
   let studentClassOptions = [];
+  // 列表分页与「批量删除」选择态
+  const studentPage = { page: 1, size: 20 };
+  let studentItemsCache = [];
+  let studentIsReg = false;
+  let studentShowOwner = false;
+  let purgeMode = false;
+  const purgeSelected = new Set();
 
   async function renderStudents(container) {
     const superUser = isSuper();
@@ -285,6 +292,15 @@
           '<button class="mini-btn" id="stuTpl">下载导入模板</button>' +
           '<button class="mini-btn" id="stuImport">批量导入</button>' +
           (superUser ? '<button class="mini-btn danger" id="stuPurge">批量删除</button>' : '') +
+          (superUser
+            ? '<span class="purge-bar hidden" id="purgeBar">' +
+                '已选 <b id="purgeCount">0</b> 条' +
+                '<button class="mini-btn" id="purgeAllPage">全选本页</button>' +
+                '<button class="mini-btn" id="purgeClear">清空选择</button>' +
+                '<button class="mini-btn danger" id="purgeDo" disabled>删除选中</button>' +
+                '<button class="mini-btn" id="purgeCancel">退出批量删除</button>' +
+              '</span>'
+            : '') +
         '</div>' +
         '<div class="filter-row">' +
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
@@ -299,6 +315,7 @@
           '<button id="stuSearch" class="login-btn filter-btn">搜索</button>' +
         '</div>' +
         '<table id="stuTable" style="width:100%;border-collapse:collapse"></table>' +
+        '<div class="pager" id="stuPager"></div>' +
       '</div>';
 
     $('stuKeyword').value = studentFilter.keyword;
@@ -307,7 +324,11 @@
     $('stuTpl').addEventListener('click', downloadStudentTemplate);
     $('stuImport').addEventListener('click', openImportStudents);
     const purgeBtn = $('stuPurge');
-    if (purgeBtn) purgeBtn.addEventListener('click', openPurgeStudents);
+    if (purgeBtn) purgeBtn.addEventListener('click', enterPurgeMode);
+    if ($('purgeCancel')) $('purgeCancel').addEventListener('click', exitPurgeMode);
+    if ($('purgeClear')) $('purgeClear').addEventListener('click', () => { purgeSelected.clear(); updatePurgeBar(); renderStudentTable(); });
+    if ($('purgeAllPage')) $('purgeAllPage').addEventListener('click', selectCurrentPage);
+    if ($('purgeDo')) $('purgeDo').addEventListener('click', purgeSelectedStudents);
     $('stuSearch').addEventListener('click', () => {
       studentFilter.keyword = $('stuKeyword').value.trim();
       studentFilter.school = $('stuSchool').value;
@@ -361,6 +382,8 @@
 
     const isReg = (res.source || studentFilter.source) === 'registered';
     const superUser = isSuper();
+    studentIsReg = isReg;
+    studentShowOwner = superUser && !isReg;
 
     fillSelect($('stuSchool'), res.schools || [], '全部学校', studentFilter.school);
     fillSelect($('stuClass'), res.classes || [], '全部班级', studentFilter.class_name);
@@ -380,9 +403,32 @@
       : '名册 <b>' + sum.total + '</b> 人　·　已注册 <b class="ok">' + sum.registered +
         '</b> 人　·　未注册 <b class="err">' + sum.unregistered + '</b> 人';
 
-    const items = res.items || [];
-    const showOwner = superUser && !isReg;
+    studentItemsCache = res.items || [];
+    purgeSelected.clear();
+    studentPage.page = 1;
+    updatePurgeBar();
+    renderStudentTable();
+  }
+
+  // 当前页的学生（分页只影响展示，筛选与选择都作用于当前页）
+  function currentStudentPageItems() {
+    const total = studentItemsCache.length;
+    const pages = Math.max(1, Math.ceil(total / studentPage.size));
+    if (studentPage.page > pages) studentPage.page = pages;
+    const start = (studentPage.page - 1) * studentPage.size;
+    return { items: studentItemsCache.slice(start, start + studentPage.size), total, pages, start };
+  }
+
+  // 渲染学生表格（含分页与批量删除的选择列）
+  function renderStudentTable() {
+    const table = $('stuTable');
+    if (!table) return;
+    const { items, total, pages } = currentStudentPageItems();
+    const showOwner = studentShowOwner;
+    const colCount = (showOwner ? 8 : 7) + (purgeMode ? 1 : 0);
+
     let html = '<tr style="background:var(--panel-soft);text-align:left">' +
+      (purgeMode ? '<th style="padding:10px;width:36px"><input type="checkbox" id="stuPickAll" /></th>' : '') +
       '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>班级</th>' +
       (showOwner ? '<th>录入教师</th>' : '') +
       '<th>注册状态</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
@@ -394,7 +440,7 @@
       const reg = s.registered
         ? '<span class="ok">已注册</span>'
         : '<span class="pending">未注册</span>';
-      const ops = isReg
+      const ops = studentIsReg
         ? '<button class="mini-btn" data-adopt="' + esc(s.id) + '" data-name="' + esc(s.name) +
           '">设置班级</button>'
         : '<button class="mini-btn" data-edit="' + esc(s.id) + '"' +
@@ -402,6 +448,10 @@
             ' data-name="' + esc(s.name) + '" data-no="' + esc(s.student_no) + '">编辑</button> ' +
           '<button class="mini-btn danger" data-del="' + esc(s.id) + '" data-name="' + esc(s.name) + '">移除</button>';
       html += '<tr style="border-top:1px solid var(--border)">' +
+        (purgeMode
+          ? '<td style="padding:10px"><input type="checkbox" class="stu-pick" value="' + esc(s.id) + '"' +
+            (purgeSelected.has(s.id) ? ' checked' : '') + ' /></td>'
+          : '') +
         '<td style="padding:10px"><a class="link" href="#/student-detail?id=' + esc(s.id) + '">' +
           esc(s.name) + '</a></td>' +
         '<td>' + esc(s.student_no) + '</td>' +
@@ -412,12 +462,12 @@
         '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
         '<td style="text-align:right">' + ops + '</td></tr>';
     });
-    const colCount = showOwner ? 8 : 7;
     if (!items.length) {
       html += '<tr><td colspan="' + colCount + '" style="padding:26px;text-align:center;color:#9aa5b2">' +
-        (isReg ? '没有未入册的自主注册学生' : '没有匹配的学生') + '</td></tr>';
+        (studentIsReg ? '没有未入册的自主注册学生' : '没有匹配的学生') + '</td></tr>';
     }
     table.innerHTML = html;
+
     table.querySelectorAll('button[data-edit]').forEach((btn) => {
       btn.addEventListener('click', () => openEditStudent(btn));
     });
@@ -427,6 +477,49 @@
     table.querySelectorAll('button[data-adopt]').forEach((btn) => {
       btn.addEventListener('click', () => adoptRegisteredStudent(btn));
     });
+    table.querySelectorAll('.stu-pick').forEach((box) => {
+      box.addEventListener('change', () => {
+        if (box.checked) purgeSelected.add(box.value);
+        else purgeSelected.delete(box.value);
+        updatePurgeBar();
+      });
+    });
+    const pickAll = $('stuPickAll');
+    if (pickAll) {
+      const ids = items.map((s) => s.id);
+      pickAll.checked = ids.length > 0 && ids.every((id) => purgeSelected.has(id));
+      pickAll.addEventListener('change', () => {
+        ids.forEach((id) => { if (pickAll.checked) purgeSelected.add(id); else purgeSelected.delete(id); });
+        renderStudentTable();
+        updatePurgeBar();
+      });
+    }
+
+    const pager = $('stuPager');
+    if (pager) {
+      pager.innerHTML = pagerHtml(studentPage.page, pages, total, studentPage.size);
+      bindPager(pager, studentPage, () => renderStudentTable());
+    }
+  }
+
+  // 分页控件（学生列表与班级名单共用）
+  function pagerHtml(page, pages, total, size) {
+    return '<span class="pager-info">共 <b>' + total + '</b> 条，第 ' + page + '/' + pages + ' 页</span>' +
+      '<select class="filter-select pager-size" id="pagerSize">' +
+        [20, 50, 100].map((n) => '<option value="' + n + '"' + (n === size ? ' selected' : '') +
+          '>每页 ' + n + ' 条</option>').join('') +
+      '</select>' +
+      '<button class="mini-btn" id="pagerPrev"' + (page <= 1 ? ' disabled' : '') + '>上一页</button>' +
+      '<button class="mini-btn" id="pagerNext"' + (page >= pages ? ' disabled' : '') + '>下一页</button>';
+  }
+
+  function bindPager(scope, state, rerender) {
+    const sizeSel = scope.querySelector('#pagerSize');
+    const prev = scope.querySelector('#pagerPrev');
+    const next = scope.querySelector('#pagerNext');
+    if (sizeSel) sizeSel.addEventListener('change', () => { state.size = Number(sizeSel.value) || 20; state.page = 1; rerender(); });
+    if (prev) prev.addEventListener('click', () => { state.page = Math.max(1, state.page - 1); rerender(); });
+    if (next) next.addEventListener('click', () => { state.page = state.page + 1; rerender(); });
   }
 
   function fillSelect(sel, options, allLabel, current) {
@@ -495,131 +588,75 @@
     }
   }
 
-  // ---- 名册批量清理（维护工具，仅超管；服务端同样只允许超管）----
+  // ---- 名册批量删除（维护工具，仅超管；服务端同样只允许超管）----
+  // 交互：点「批量删除」后整个表格进入选择态，逐条勾选（可全选本页），再点「删除选中」。
+  // 一次最多处理一页（每页 ≤100 条），既顺手又把单次删除量限制在可控范围。
   // 只删除名册记录并撤销这些学号的 AI 白名单；不删除微信注册账号、学习记录与 AI 问答。
-  function purgeDateToIso(dateStr, endOfDay) {
-    if (!dateStr) return '';
-    const d = new Date(dateStr + (endOfDay ? 'T23:59:59.999+08:00' : 'T00:00:00+08:00'));
-    return isNaN(d.getTime()) ? '' : d.toISOString();
-  }
-
-  function openPurgeStudents() {
+  function enterPurgeMode() {
     if (!isSuper()) { alert('仅超级管理员可使用批量删除'); return; }
-
-    openModal('批量删除名册记录（维护工具）',
-      '<div class="hint">用于清理误导入的名册记录：<b>只删除名册记录并撤销这些学号的 AI 提问白名单</b>，' +
-      '不会删除学生的微信注册账号、学习记录与 AI 问答记录。删除前请先在云开发控制台导出备份。</div>' +
-      '<div class="form-grid">' +
-        '<div class="fld"><label>学校（精确匹配）</label>' +
-          '<input id="pgSchool" class="filter-input" placeholder="如 安徽建筑大学" /></div>' +
-        '<div class="fld"><label>班级（精确匹配）</label>' +
-          '<input id="pgClass" class="filter-input" placeholder="如 机械2401" /></div>' +
-        '<div class="fld"><label>学号 / 姓名包含</label>' +
-          '<input id="pgKeyword" class="filter-input" placeholder="可选" /></div>' +
-        '<div class="fld"><label>注册状态</label><select id="pgReg" class="filter-select">' +
-          '<option value="">全部</option><option value="no">未注册</option><option value="yes">已注册</option>' +
-        '</select></div>' +
-        '<div class="fld"><label>创建日期（从）</label>' +
-          '<input id="pgFrom" class="filter-input" type="date" /></div>' +
-        '<div class="fld"><label>创建日期（到，含当天）</label>' +
-          '<input id="pgTo" class="filter-input" type="date" /></div>' +
-      '</div>' +
-      '<label class="pick-sub" style="display:block;margin:0 0 8px">' +
-        '<input type="checkbox" id="pgNotes" style="margin-right:6px" />同时清理这些学生的教师备注（默认不清理）</label>' +
-      '<div id="pgResult"></div>' +
-      '<div id="pgErr" class="form-err"></div>',
-      '<button class="mini-btn" id="pgCancel">取消</button>' +
-      '<button class="mini-btn" id="pgPreview">预览匹配记录</button>' +
-      '<button class="mini-btn danger" id="pgCommit" disabled>删除匹配记录</button>');
-
-    let matched = 0;
-    let batchSize = 0;
-
-    const buildPayload = () => ({
-      school: $('pgSchool').value.trim(),
-      class_name: $('pgClass').value.trim(),
-      keyword: $('pgKeyword').value.trim(),
-      registered: $('pgReg').value,
-      created_from: purgeDateToIso($('pgFrom').value, false),
-      created_to: purgeDateToIso($('pgTo').value, true),
-      purge_notes: !!$('pgNotes').checked
-    });
-    const hasCondition = (p) => !!(p.school || p.class_name || p.keyword || p.registered ||
-      p.created_from || p.created_to);
-
-    $('pgCancel').addEventListener('click', closeModal);
-
-    $('pgPreview').addEventListener('click', async () => {
-      $('pgErr').textContent = '';
-      const payload = buildPayload();
-      if (!hasCondition(payload)) {
-        $('pgErr').textContent = '请至少填写一个筛选条件（学校 / 班级 / 学号姓名 / 注册状态 / 创建日期）';
-        return;
-      }
-      $('pgPreview').disabled = true;
-      const res = await api.purgeStudents(payload);
-      $('pgPreview').disabled = false;
-      if (!res || !res.ok) {
-        $('pgErr').textContent = classErrText(res, '预览失败');
-        return;
-      }
-
-      matched = res.matched || 0;
-      batchSize = res.batch || 0;
-      const list = (res.preview || []).map((s) =>
-        '<div class="pick-row"><span class="pick-main">' + esc(s.name) + '　' + esc(s.student_no) +
-        '</span><span class="pick-sub">' + esc(s.school || '—') + '　·　' + esc(s.class_name || '未分班') +
-        '　·　' + (s.registered ? '已注册' : '未注册') + '　·　' + esc(fmtDate(s.created_at)) + '</span></div>').join('');
-
-      $('pgResult').innerHTML =
-        '<div class="hint">匹配 <b>' + matched + '</b> 条，本次最多处理 <b>' + batchSize + '</b> 条' +
-        (res.remaining_after_batch ? '，处理完还剩 <b>' + res.remaining_after_batch + '</b> 条' : '') +
-        (res.will_revoke_roster ? '；将同步撤销这些学号的 AI 提问白名单。' : '；不撤销 AI 白名单。') + '</div>' +
-        (list ? '<div class="pick-list">' + list + '</div>' : '<div class="placeholder">没有匹配的记录</div>');
-
-      $('pgCommit').disabled = matched === 0;
-      $('pgCommit').textContent = matched === 0
-        ? '没有匹配记录'
-        : ('删除这 ' + Math.min(matched, batchSize) + ' 条');
-    });
-
-    $('pgCommit').addEventListener('click', async () => {
-      if (!matched) return;
-      const willDelete = Math.min(matched, batchSize);
-      if (!confirm('将删除 ' + willDelete + ' 条名册记录，并撤销这些学号的 AI 提问白名单。\n\n' +
-        '不会删除微信注册账号、学习记录与 AI 问答记录；此操作不可撤销，请确认已导出备份。\n\n是否继续？')) return;
-
-      $('pgErr').textContent = '';
-      $('pgCommit').disabled = true;
-      const payload = Object.assign(buildPayload(), { dry_run: false, confirm_count: matched });
-      const res = await api.purgeStudents(payload);
-      if (!res || !res.ok) {
-        const known = !!(res && (res.msg || (res.code && CLASS_ERROR_TEXT[res.code])));
-        $('pgErr').textContent = known
-          ? classErrText(res)
-          : '服务未返回结果（多为调用超时或被中断）。请先点「预览匹配记录」核对剩余条数，再继续删除。';
-        $('pgCommit').disabled = false;
-        return;
-      }
-
-      const failed = res.errors || [];
-      $('pgResult').innerHTML =
-        '<div class="form-ok">已删除 ' + (res.removed_students || 0) + ' 条名册记录，撤销 AI 白名单 ' +
-        (res.revoked_roster || 0) + ' 条' +
-        (res.removed_notes ? '，清理教师备注 ' + res.removed_notes + ' 条' : '') + '。</div>' +
-        (failed.length
-          ? '<div class="form-err">以下 ' + failed.length + ' 条未删除：</div>' +
-            failed.map((f) => '<div class="pick-sub">· ' + esc(f.msg || f.code || '') + '</div>').join('')
-          : '') +
-        '<div class="hint">' + esc(res.hint || '') + '</div>' +
-        (res.remaining
-          ? '<div class="form-err">还有 ' + res.remaining + ' 条未处理：请再次点击「预览匹配记录」后继续删除。</div>'
-          : '');
-      $('pgCommit').textContent = '删除匹配记录';
-      await loadStudents();
-    });
+    purgeMode = true;
+    purgeSelected.clear();
+    const bar = $('purgeBar');
+    if (bar) bar.classList.remove('hidden');
+    updatePurgeBar();
+    renderStudentTable();
   }
 
+  function exitPurgeMode() {
+    purgeMode = false;
+    purgeSelected.clear();
+    const bar = $('purgeBar');
+    if (bar) bar.classList.add('hidden');
+    renderStudentTable();
+  }
+
+  function updatePurgeBar() {
+    const count = $('purgeCount');
+    if (count) count.textContent = String(purgeSelected.size);
+    const doBtn = $('purgeDo');
+    if (doBtn) doBtn.disabled = purgeSelected.size === 0;
+  }
+
+  // 全选/取消全选当前页；跨页选择会保留（换页不清空，筛选变化时才清空）
+  function selectCurrentPage() {
+    const { items } = currentStudentPageItems();
+    const allSelected = items.length > 0 && items.every((s) => purgeSelected.has(s.id));
+    items.forEach((s) => {
+      if (allSelected) purgeSelected.delete(s.id);
+      else purgeSelected.add(s.id);
+    });
+    const btn = $('purgeAllPage');
+    if (btn) btn.textContent = allSelected ? '全选本页' : '取消全选本页';
+    renderStudentTable();
+    updatePurgeBar();
+  }
+
+  async function purgeSelectedStudents() {
+    const ids = Array.from(purgeSelected);
+    if (!ids.length) return;
+    if (!confirm('将删除选中的 ' + ids.length + ' 条名册记录，并撤销这些学号的 AI 提问白名单。\n\n' +
+      '不会删除学生的微信注册账号、学习记录与 AI 问答记录；此操作不可撤销。\n\n是否继续？')) return;
+
+    const doBtn = $('purgeDo');
+    if (doBtn) { doBtn.disabled = true; doBtn.textContent = '删除中…'; }
+    const res = await api.purgeStudents({ doc_ids: ids, dry_run: false });
+    if (doBtn) doBtn.textContent = '删除选中';
+
+    if (!res || !res.ok) {
+      const known = !!(res && (res.msg || (res.code && CLASS_ERROR_TEXT[res.code])));
+      alert(known ? classErrText(res) : '服务未返回结果（多为调用超时或被中断）。请刷新页面后重试。');
+      if (doBtn) doBtn.disabled = purgeSelected.size === 0;
+      return;
+    }
+
+    const failCount = (res.errors || []).length;
+    alert('已删除 ' + (res.removed_students || 0) + ' 条名册记录，撤销 AI 白名单 ' +
+      (res.revoked_roster || 0) + ' 条。' +
+      (res.not_found ? '\n（有 ' + res.not_found + ' 条已不存在，已跳过）' : '') +
+      (failCount ? '\n失败 ' + failCount + ' 条，请重试' : ''));
+    purgeSelected.clear();
+    await loadStudents();
+  }
   // 编辑单条名册记录（学校 / 班级 / 姓名 / 学号）
   function openEditStudent(btn) {
     const d = btn.dataset;
@@ -638,6 +675,8 @@
     $('eCancel').addEventListener('click', closeModal);
     $('eSave').addEventListener('click', async () => {
       $('eErr').textContent = '';
+      const identErr = studentIdentityError($('eName').value.trim(), $('eNo').value.trim());
+      if (identErr) { $('eErr').textContent = identErr; return; }
       $('eSave').disabled = true;
       const res = await api.updateStudent({
         doc_id: d.edit,
@@ -689,6 +728,25 @@
     if (m) m.remove();
   }
 
+  // 与后端 validateStudentIdentity 同一口径的前端预校验（后端仍会最终把关）
+  function studentIdentityError(name, studentNo) {
+    const no = String(studentNo == null ? '' : studentNo).trim().replace(/\s+/g, '');
+    const nm = String(name == null ? '' : name).trim();
+    if (!nm) return '请填写姓名';
+    if (!no) return '请填写学号';
+    if (!/^[0-9]+$/.test(no)) {
+      return '学号必须是纯数字（当前为「' + no + '」），请检查是否把姓名填到了学号栏';
+    }
+    if (no.length < 4 || no.length > 20) {
+      return '学号位数应为 4–20 位（当前 ' + no.length + ' 位）';
+    }
+    if (/[0-9]/.test(nm)) {
+      return '姓名不能包含数字（当前为「' + nm + '」），请检查是否把学号填到了姓名栏';
+    }
+    if (nm.length > 20) return '姓名过长（最多 20 个字符）';
+    return '';
+  }
+
   // ---- 新增学生 ----
   function openAddStudent() {
     openModal('新增学生',
@@ -712,6 +770,8 @@
         student_no: $('fNo').value.trim()
       };
       $('fErr').textContent = '';
+      const identErr = studentIdentityError(payload.name, payload.student_no);
+      if (identErr) { $('fErr').textContent = identErr; return; }
       $('fSave').disabled = true;
       const res = await api.createStudent(payload);
       $('fSave').disabled = false;
@@ -744,16 +804,43 @@
   function parseStudentRows(text) {
     const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim());
     const rows = [];
+    let headerMap = null;
+
+    // 按表头列名识别列位置（支持中英文），避免列顺序不同导致姓名/学号串位
+    const pickHeader = (cols) => {
+      const m = {};
+      cols.forEach((c, i) => {
+        const k = String(c || '').trim().replace(/^"|"$/g, '').toLowerCase();
+        if (m.school === undefined && (k === 'school' || k.indexOf('学校') >= 0)) m.school = i;
+        else if (m.class_name === undefined && (k === 'class' || k === 'class_name' || k.indexOf('班级') >= 0)) m.class_name = i;
+        else if (m.name === undefined && (k === 'name' || k.indexOf('姓名') >= 0)) m.name = i;
+        else if (m.student_no === undefined && (k === 'student_no' || k === 'student_id' || k.indexOf('学号') >= 0)) m.student_no = i;
+      });
+      return (m.name !== undefined && m.student_no !== undefined) ? m : null;
+    };
+
     lines.forEach((line, idx) => {
       const cols = line.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
-      if (idx === 0 && cols.some((c) => c.indexOf('学号') >= 0 || c.indexOf('姓名') >= 0)) return;
+      if (idx === 0) {
+        const m = pickHeader(cols);
+        if (m) { headerMap = m; return; }
+      }
       if (!cols.join('').trim()) return;
-      rows.push({
-        school: cols[0] || '',
-        class_name: cols[1] || '',
-        name: cols[2] || '',
-        student_no: cols[3] || ''
-      });
+      if (headerMap) {
+        rows.push({
+          school: cols[headerMap.school] || '',
+          class_name: headerMap.class_name !== undefined ? (cols[headerMap.class_name] || '') : '',
+          name: cols[headerMap.name] || '',
+          student_no: cols[headerMap.student_no] || ''
+        });
+      } else {
+        rows.push({
+          school: cols[0] || '',
+          class_name: cols[1] || '',
+          name: cols[2] || '',
+          student_no: cols[3] || ''
+        });
+      }
     });
     return rows;
   }
@@ -795,9 +882,11 @@
         return;
       }
       const s = res.summary || {};
+      const formatErr = Math.max(0, (s.invalid || 0) - (s.missing || 0) - (s.duplicate || 0));
       let html = '<div class="imp-sum">共 <b>' + s.total + '</b> 条：可导入 <b class="ok">' + s.valid +
         '</b>，学号重复 <b class="err">' + (s.duplicate || 0) + '</b>，信息缺失 <b class="err">' +
-        (s.missing || 0) + '</b></div>';
+        (s.missing || 0) + '</b>' +
+        (formatErr ? '，格式错误 <b class="err">' + formatErr + '</b>' : '') + '</div>';
       if (res.errors && res.errors.length) {
         html += '<div class="imp-errs">';
         res.errors.slice(0, 30).forEach((er) => {
@@ -1003,6 +1092,8 @@
   // 数据关系：students.class_id → classes._id 是唯一权威关联；students.class_name 是兼容展示快照。
   // 前端只调用 class.* 接口，不直接改写学生的 class_id / class_name；权限由服务端强制，失败照实显示。
   const classFilter = { keyword: '', status: '' }; // status: '' = 进行中（服务端默认）| 'archived' | 'all'
+  const classMemberPage = { page: 1, size: 20 };
+  let classMembersCache = [];
   const CLASS_STATUS_TEXT = { active: '进行中', archived: '已停用' };
   const CLASS_ERROR_TEXT = {
     UNAUTHORIZED: '登录已过期，请重新登录',
@@ -1242,12 +1333,32 @@
         '</div>' +
         '<div class="page-sub" style="margin:0 0 8px">学生名单 <b>' + members.length + '</b> 人</div>' +
         '<table id="cdTable" style="width:100%;border-collapse:collapse"></table>' +
+        '<div class="pager" id="cdPager"></div>' +
       '</div>';
+
+    const backBtn = $('cdBack');
+    if (backBtn) backBtn.addEventListener('click', () => { location.hash = '#/classes'; });
+    const addBtn = $('cdAdd');
+    if (addBtn) addBtn.addEventListener('click', () => openAddClassMembers(classId, c.name || ''));
+    classMembersCache = members;
+    classMemberPage.page = 1;
+    renderClassMemberTable(classId, archived);
+  }
+
+  // 班级名单分页渲染（复用学生列表的分页控件）
+  function renderClassMemberTable(classId, archived) {
+    const table = $('cdTable');
+    if (!table) return;
+    const total = classMembersCache.length;
+    const pages = Math.max(1, Math.ceil(total / classMemberPage.size));
+    if (classMemberPage.page > pages) classMemberPage.page = pages;
+    const start = (classMemberPage.page - 1) * classMemberPage.size;
+    const pageItems = classMembersCache.slice(start, start + classMemberPage.size);
 
     let rows = '<tr style="background:var(--panel-soft);text-align:left">' +
       '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>注册状态</th><th>最近登录</th>' +
       (archived ? '' : '<th style="text-align:right">操作</th>') + '</tr>';
-    members.forEach((m) => {
+    pageItems.forEach((m) => {
       rows += '<tr style="border-top:1px solid var(--border)">' +
         '<td style="padding:10px">' + esc(m.name) + '</td>' +
         '<td>' + esc(m.student_no) + '</td>' +
@@ -1259,20 +1370,22 @@
           esc(m.name) + '">移出班级</button></td>') +
         '</tr>';
     });
-    if (!members.length) {
+    if (!pageItems.length) {
       rows += '<tr><td colspan="' + (archived ? 5 : 6) +
         '" style="padding:26px;text-align:center;color:#9aa5b2">' +
         (archived ? '该班级没有学生' : '该班级还没有学生，点击「+ 添加学生」加入') + '</td></tr>';
     }
-    $('cdTable').innerHTML = rows;
+    table.innerHTML = rows;
 
-    const backBtn = $('cdBack');
-    if (backBtn) backBtn.addEventListener('click', () => { location.hash = '#/classes'; });
-    const addBtn = $('cdAdd');
-    if (addBtn) addBtn.addEventListener('click', () => openAddClassMembers(classId, c.name || ''));
-    $('cdTable').querySelectorAll('button[data-remove]').forEach((btn) => {
+    table.querySelectorAll('button[data-remove]').forEach((btn) => {
       btn.addEventListener('click', () => removeClassMember(classId, btn.dataset.remove, btn.dataset.name));
     });
+
+    const pager = $('cdPager');
+    if (pager) {
+      pager.innerHTML = pagerHtml(classMemberPage.page, pages, total, classMemberPage.size);
+      bindPager(pager, classMemberPage, () => renderClassMemberTable(classId, archived));
+    }
   }
 
   // 添加学生：候选由服务端给出（仅本班负责教师名册、未加入本班的学生）
