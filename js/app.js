@@ -7,7 +7,7 @@
   const routes = {
     dashboard: { title: '教学驾驶舱', sub: '学生如何学习点线面与 AI 教师' },
     classes: { title: '班级管理', sub: '班级列表与学生归属' },
-    students: { title: '学生管理', sub: '学生列表与搜索' },
+    unrostered: { title: '未入册学生', sub: '白名单以外：自主注册但未进入任何班级' },
     learning: { title: '学习记录', sub: '全体学生的学习行为事件流' },
     plp: { title: '点线面分析', sub: '点 / 线 / 面互动使用情况' },
     ai: { title: 'AI 教师分析', sub: '学生提问记录与高频知识点' },
@@ -20,7 +20,7 @@
   const navItems = [
     { key: 'dashboard', label: '驾驶舱', icon: '📊' },
     { key: 'classes', label: '班级', icon: '🏫' },
-    { key: 'students', label: '学生', icon: '👥' },
+    { key: 'unrostered', label: '未入册学生', icon: '🧾', superOnly: true },
     { key: 'learning', label: '学习记录', icon: '🕘' },
     { key: 'plp', label: '点线面', icon: '📐' },
     { key: 'ai', label: 'AI 教师', icon: '💬' },
@@ -132,6 +132,7 @@
     $('pageTitle').textContent = route.title;
     $('pageSub').textContent = route.sub;
     if (key === 'teachers' && !isSuper()) { location.hash = '#/dashboard'; return; }
+    if (key === 'unrostered' && !isSuper()) { location.hash = '#/dashboard'; return; }
 
     const content = $('content');
     content.innerHTML = '';
@@ -139,7 +140,7 @@
     else if (key === 'teachers') await renderTeachers(content);
     else if (key === 'classes') await renderClasses(content);
     else if (key === 'class-detail') await renderClassDetail(content);
-    else if (key === 'students') await renderStudents(content);
+    else if (key === 'unrostered') await renderUnrostered(content);
     else if (key === 'learning') await renderLearning(content);
     else if (key === 'student-detail') await renderStudentDetail(content);
     else if (key === 'plp') renderPlaceholder(content, '点线面分析');
@@ -268,48 +269,25 @@
   // 列表分页与「批量删除」选择态
   const studentPage = { page: 1, size: 20 };
   let studentItemsCache = [];
-  let studentIsReg = false;
   let studentShowOwner = false;
-  let purgeMode = false;
-  const purgeSelected = new Set();
 
-  async function renderStudents(container) {
-    const superUser = isSuper();
+  // 未入册学生 = 白名单以外的人：已用微信注册，但没有被任何老师录进班级名册。
+  // 他们可以使用互动工具，不能用 AI 提问；由对应老师在自己班级里录入后自动开通。
+  async function renderUnrostered(container) {
+    studentFilter.source = 'registered';
+    studentFilter.class_name = '';
+    studentFilter.registered = '';
+    studentFilter.owner_teacher_id = '';
+
     container.innerHTML =
-      '<div class="page-title">学生管理</div>' +
+      '<div class="page-title">未入册学生</div>' +
       '<div class="page-sub" id="stuSumLine">—</div>' +
-      (superUser
-        ? '<div class="tabs">' +
-            '<button class="tab" data-src="roster">名册学生（教师录入）</button>' +
-            '<button class="tab" data-src="registered">未入册学生（自主注册）</button>' +
-          '</div>'
-        : '') +
       '<div class="card">' +
-        '<div class="tool-row">' +
-          '<button class="login-btn filter-btn" id="stuGoClasses">去「班级」页录入学生</button>' +
-          (superUser ? '<button class="mini-btn danger" id="stuPurge">批量删除</button>' : '') +
-          (superUser
-            ? '<span class="purge-bar hidden" id="purgeBar">' +
-                '已选 <b id="purgeCount">0</b> 条' +
-                '<button class="mini-btn" id="purgeAllPage">全选本页</button>' +
-                '<button class="mini-btn" id="purgeClear">清空选择</button>' +
-                '<button class="mini-btn danger" id="purgeDo" disabled>删除选中</button>' +
-                '<button class="mini-btn" id="purgeCancel">退出批量删除</button>' +
-              '</span>'
-            : '') +
-        '</div>' +
-        '<div class="hint" style="margin:0 0 8px">录入学生已统一到「班级」页：打开班级后点「+ 新录入学生」或「批量导入到本班」，' +
-          '学生会自动归入该班并开通 AI 提问权限。本页用于查看、筛选、修正与清理名册。</div>' +
+        '<div class="hint" style="margin:0 0 8px">这些学生已经用微信注册（能正常使用互动工具），但还没有被任何老师录入班级名册，' +
+          '因此不能使用 AI 教师提问。由对应老师在「班级」页录入该学生（学号与姓名需与本人填写的一致）后，权限会自动开通。</div>' +
         '<div class="filter-row">' +
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
           '<select id="stuSchool" class="filter-select"></select>' +
-          '<select id="stuClass" class="filter-select"></select>' +
-          (superUser ? '<select id="stuOwner" class="filter-select"></select>' : '') +
-          '<select id="stuReg" class="filter-select">' +
-            '<option value="">全部状态</option>' +
-            '<option value="no">未注册</option>' +
-            '<option value="yes">已注册</option>' +
-          '</select>' +
           '<button id="stuSearch" class="login-btn filter-btn">搜索</button>' +
         '</div>' +
         '<table id="stuTable" style="width:100%;border-collapse:collapse"></table>' +
@@ -317,52 +295,15 @@
       '</div>';
 
     $('stuKeyword').value = studentFilter.keyword;
-    $('stuReg').value = studentFilter.registered;
-    $('stuGoClasses').addEventListener('click', () => { location.hash = '#/classes'; });
-    const purgeBtn = $('stuPurge');
-    if (purgeBtn) purgeBtn.addEventListener('click', enterPurgeMode);
-    if ($('purgeCancel')) $('purgeCancel').addEventListener('click', exitPurgeMode);
-    if ($('purgeClear')) $('purgeClear').addEventListener('click', () => { purgeSelected.clear(); updatePurgeBar(); renderStudentTable(); });
-    if ($('purgeAllPage')) $('purgeAllPage').addEventListener('click', selectCurrentPage);
-    if ($('purgeDo')) $('purgeDo').addEventListener('click', purgeSelectedStudents);
     $('stuSearch').addEventListener('click', () => {
       studentFilter.keyword = $('stuKeyword').value.trim();
       studentFilter.school = $('stuSchool').value;
-      studentFilter.class_name = $('stuClass').value;
-      studentFilter.registered = $('stuReg').value;
-      if (superUser && $('stuOwner')) studentFilter.owner_teacher_id = $('stuOwner').value;
       loadStudents();
     });
     $('stuKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('stuSearch').click(); });
     $('stuSchool').addEventListener('change', () => $('stuSearch').click());
-    $('stuClass').addEventListener('change', () => $('stuSearch').click());
-    $('stuReg').addEventListener('change', () => $('stuSearch').click());
-    if (superUser && $('stuOwner')) $('stuOwner').addEventListener('change', () => $('stuSearch').click());
-
-    // 来源切换（名册 / 未入册自主注册）
-    container.querySelectorAll('.tab').forEach((tab) => {
-      tab.classList.toggle('active', tab.dataset.src === studentFilter.source);
-      tab.addEventListener('click', () => {
-        studentFilter.source = tab.dataset.src;
-        container.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab));
-        syncStudentFilterVisibility();
-        loadStudents();
-      });
-    });
-    syncStudentFilterVisibility();
 
     await loadStudents();
-  }
-
-  // 未入册视图下隐藏「班级 / 归属教师 / 注册状态」等不适用筛选项
-  function syncStudentFilterVisibility() {
-    const isReg = studentFilter.source === 'registered';
-    ['stuClass', 'stuReg'].forEach((id) => {
-      const el = $(id);
-      if (el && el.parentNode) el.style.display = isReg ? 'none' : '';
-    });
-    const owner = $('stuOwner');
-    if (owner && owner.parentNode) owner.style.display = isReg ? 'none' : '';
   }
 
   async function loadStudents() {
@@ -376,34 +317,18 @@
       return;
     }
 
-    const isReg = (res.source || studentFilter.source) === 'registered';
     const superUser = isSuper();
-    studentIsReg = isReg;
-    // 录入教师列：超管在两种视图都显示（白名单以外的人显示「无」）
+    // 录入教师列：超管可见（白名单以外的人显示「无」）
     studentShowOwner = superUser;
 
     fillSelect($('stuSchool'), res.schools || [], '全部学校', studentFilter.school);
-    fillSelect($('stuClass'), res.classes || [], '全部班级', studentFilter.class_name);
-    if (superUser && $('stuOwner')) {
-      let ownHtml = '<option value="">全部录入教师</option>';
-      (res.owners || []).forEach((o) => {
-        ownHtml += '<option value="' + esc(o.id) + '">' + esc(o.name) + '</option>';
-      });
-      $('stuOwner').innerHTML = ownHtml;
-      $('stuOwner').value = studentFilter.owner_teacher_id || '';
-    }
 
     const sum = res.summary || { total: 0, registered: 0, unregistered: 0 };
-    $('stuSumLine').innerHTML = isReg
-      ? '白名单以外（自主注册，未入任何班级）<b>' + sum.total + '</b> 人　·　他们可以使用互动工具，' +
-        '但不能使用 AI 教师提问；由对应老师在自己的班级里录入该学生后，AI 提问权限会自动开通'
-      : '名册 <b>' + sum.total + '</b> 人　·　已注册 <b class="ok">' + sum.registered +
-        '</b> 人　·　未注册 <b class="err">' + sum.unregistered + '</b> 人';
+    $('stuSumLine').innerHTML = '白名单以外（自主注册，未入任何班级）<b>' + sum.total + '</b> 人　·　' +
+      '他们可以使用互动工具，但不能使用 AI 教师提问；由对应老师在自己的班级里录入该学生后，AI 提问权限会自动开通';
 
     studentItemsCache = res.items || [];
-    purgeSelected.clear();
     studentPage.page = 1;
-    updatePurgeBar();
     renderStudentTable();
   }
 
@@ -422,10 +347,9 @@
     if (!table) return;
     const { items, total, pages } = currentStudentPageItems();
     const showOwner = studentShowOwner;
-    const colCount = (showOwner ? 8 : 7) + (purgeMode ? 1 : 0);
+    const colCount = showOwner ? 8 : 7;
 
     let html = '<tr style="background:var(--panel-soft);text-align:left">' +
-      (purgeMode ? '<th style="padding:10px;width:36px"><input type="checkbox" id="stuPickAll" /></th>' : '') +
       '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>班级</th>' +
       (showOwner ? '<th>录入教师</th>' : '') +
       '<th>注册状态</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
@@ -437,17 +361,7 @@
       const reg = s.registered
         ? '<span class="ok">已注册</span>'
         : '<span class="pending">未注册</span>';
-      const ops = studentIsReg
-        ? '<span style="color:#9aa5b2">白名单以外</span>'
-        : '<button class="mini-btn" data-edit="' + esc(s.id) + '"' +
-            ' data-school="' + esc(s.school) + '" data-class="' + esc(s.class_name) + '"' +
-            ' data-name="' + esc(s.name) + '" data-no="' + esc(s.student_no) + '">编辑</button> ' +
-          '<button class="mini-btn danger" data-del="' + esc(s.id) + '" data-name="' + esc(s.name) + '">移除</button>';
       html += '<tr style="border-top:1px solid var(--border)">' +
-        (purgeMode
-          ? '<td style="padding:10px"><input type="checkbox" class="stu-pick" value="' + esc(s.id) + '"' +
-            (purgeSelected.has(s.id) ? ' checked' : '') + ' /></td>'
-          : '') +
         '<td style="padding:10px"><a class="link" href="#/student-detail?id=' + esc(s.id) + '">' +
           esc(s.name) + '</a></td>' +
         '<td>' + esc(s.student_no) + '</td>' +
@@ -456,37 +370,13 @@
         (showOwner ? '<td style="color:#6a7688">' + esc(s.owner_teacher_name || '无') + '</td>' : '') +
         '<td>' + reg + '</td>' +
         '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
-        '<td style="text-align:right">' + ops + '</td></tr>';
+        '<td style="text-align:right"><span style="color:#9aa5b2">白名单以外</span></td></tr>';
     });
     if (!items.length) {
       html += '<tr><td colspan="' + colCount + '" style="padding:26px;text-align:center;color:#9aa5b2">' +
-        (studentIsReg ? '没有未入册的自主注册学生' : '没有匹配的学生') + '</td></tr>';
+        (studentFilter.keyword || studentFilter.school ? '没有匹配的学生' : '没有未入册的自主注册学生') + '</td></tr>';
     }
     table.innerHTML = html;
-
-    table.querySelectorAll('button[data-edit]').forEach((btn) => {
-      btn.addEventListener('click', () => openEditStudent(btn));
-    });
-    table.querySelectorAll('button[data-del]').forEach((btn) => {
-      btn.addEventListener('click', () => removeStudent(btn));
-    });
-    table.querySelectorAll('.stu-pick').forEach((box) => {
-      box.addEventListener('change', () => {
-        if (box.checked) purgeSelected.add(box.value);
-        else purgeSelected.delete(box.value);
-        updatePurgeBar();
-      });
-    });
-    const pickAll = $('stuPickAll');
-    if (pickAll) {
-      const ids = items.map((s) => s.id);
-      pickAll.checked = ids.length > 0 && ids.every((id) => purgeSelected.has(id));
-      pickAll.addEventListener('change', () => {
-        ids.forEach((id) => { if (pickAll.checked) purgeSelected.add(id); else purgeSelected.delete(id); });
-        renderStudentTable();
-        updatePurgeBar();
-      });
-    }
 
     const pager = $('stuPager');
     if (pager) {
@@ -534,81 +424,14 @@
     if (!confirm('确定从名册中移除「' + name + '」吗？\n\n将同时撤销该学号的 AI 教师提问权限。\n（不影响该学生已注册的微信账号）')) return;
     const res = await api.deleteStudent(id);
     if (res && res.ok) {
-      await loadStudents();
+      await renderRoute();
     } else {
       alert((res && res.msg) || '移除失败');
     }
   }
 
-  // ---- 名册批量删除（维护工具，仅超管；服务端同样只允许超管）----
-  // 交互：点「批量删除」后整个表格进入选择态，逐条勾选（可全选本页），再点「删除选中」。
-  // 一次最多处理一页（每页 ≤100 条），既顺手又把单次删除量限制在可控范围。
-  // 只删除名册记录并撤销这些学号的 AI 白名单；不删除微信注册账号、学习记录与 AI 问答。
-  function enterPurgeMode() {
-    if (!isSuper()) { alert('仅超级管理员可使用批量删除'); return; }
-    purgeMode = true;
-    purgeSelected.clear();
-    const bar = $('purgeBar');
-    if (bar) bar.classList.remove('hidden');
-    updatePurgeBar();
-    renderStudentTable();
-  }
-
-  function exitPurgeMode() {
-    purgeMode = false;
-    purgeSelected.clear();
-    const bar = $('purgeBar');
-    if (bar) bar.classList.add('hidden');
-    renderStudentTable();
-  }
-
-  function updatePurgeBar() {
-    const count = $('purgeCount');
-    if (count) count.textContent = String(purgeSelected.size);
-    const doBtn = $('purgeDo');
-    if (doBtn) doBtn.disabled = purgeSelected.size === 0;
-  }
-
-  // 全选/取消全选当前页；跨页选择会保留（换页不清空，筛选变化时才清空）
-  function selectCurrentPage() {
-    const { items } = currentStudentPageItems();
-    const allSelected = items.length > 0 && items.every((s) => purgeSelected.has(s.id));
-    items.forEach((s) => {
-      if (allSelected) purgeSelected.delete(s.id);
-      else purgeSelected.add(s.id);
-    });
-    const btn = $('purgeAllPage');
-    if (btn) btn.textContent = allSelected ? '全选本页' : '取消全选本页';
-    renderStudentTable();
-    updatePurgeBar();
-  }
-
-  async function purgeSelectedStudents() {
-    const ids = Array.from(purgeSelected);
-    if (!ids.length) return;
-    if (!confirm('将删除选中的 ' + ids.length + ' 条名册记录，并撤销这些学号的 AI 提问白名单。\n\n' +
-      '不会删除学生的微信注册账号、学习记录与 AI 问答记录；此操作不可撤销。\n\n是否继续？')) return;
-
-    const doBtn = $('purgeDo');
-    if (doBtn) { doBtn.disabled = true; doBtn.textContent = '删除中…'; }
-    const res = await api.purgeStudents({ doc_ids: ids, dry_run: false });
-    if (doBtn) doBtn.textContent = '删除选中';
-
-    if (!res || !res.ok) {
-      const known = !!(res && (res.msg || (res.code && CLASS_ERROR_TEXT[res.code])));
-      alert(known ? classErrText(res) : '服务未返回结果（多为调用超时或被中断）。请刷新页面后重试。');
-      if (doBtn) doBtn.disabled = purgeSelected.size === 0;
-      return;
-    }
-
-    const failCount = (res.errors || []).length;
-    alert('已删除 ' + (res.removed_students || 0) + ' 条名册记录，撤销 AI 白名单 ' +
-      (res.revoked_roster || 0) + ' 条。' +
-      (res.not_found ? '\n（有 ' + res.not_found + ' 条已不存在，已跳过）' : '') +
-      (failCount ? '\n失败 ' + failCount + ' 条，请重试' : ''));
-    purgeSelected.clear();
-    await loadStudents();
-  }
+  // 名册的批量清理改由「班级详情 → 批量管理」完成（移出班级 / 从名册删除）；
+  // 后台仍保留 student.purge 供脚本按条件清理（例如按 owner + no_class 释放误收编记录）。
   // 编辑单条名册记录（学校 / 班级 / 姓名 / 学号）
   async function openEditStudent(btn) {
     const d = btn.dataset;
@@ -647,7 +470,7 @@
       $('eSave').disabled = false;
       if (res && res.ok) {
         closeModal();
-        await loadStudents();
+        await renderRoute();
       } else {
         $('eErr').textContent = (res && res.msg) || '保存失败';
       }
@@ -1041,7 +864,7 @@
     html += '</div></div>';
 
     container.innerHTML = html;
-    $('detailBack').addEventListener('click', () => { location.hash = '#/students'; });
+    $('detailBack').addEventListener('click', () => { location.hash = '#/classes'; });
 
     $('noteSave').addEventListener('click', async () => {
       const text = ($('noteInput').value || '').trim();
@@ -1077,6 +900,9 @@
   const classFilter = { keyword: '', status: '' }; // status: '' = 进行中（服务端默认）| 'archived' | 'all'
   const classMemberPage = { page: 1, size: 20 };
   let classMembersCache = [];
+  let classDetailCtx = { classId: '', archived: false };
+  let classMemberSelectMode = false;
+  const classMemberSelected = new Set();
   const CLASS_STATUS_TEXT = { active: '进行中', archived: '已停用' };
   const CLASS_ERROR_TEXT = {
     UNAUTHORIZED: '登录已过期，请重新登录',
@@ -1315,10 +1141,18 @@
           (archived ? '' : '<button class="mini-btn" id="cdImport">批量导入到本班</button>') +
           (archived ? '' : '<button class="mini-btn" id="cdAdd">从名册添加</button>') +
           (archived ? '' : '<button class="mini-btn" id="cdSync">从名册并入</button>') +
+          (archived ? '' : '<button class="mini-btn" id="cdBatch">批量管理</button>') +
+          (archived ? '' : '<span class="purge-bar hidden" id="cdBatchBar">已选 <b id="cdSelCount">0</b> 条' +
+            '<button class="mini-btn" id="cdSelAll">全选本页</button>' +
+            '<button class="mini-btn" id="cdSelClear">清空选择</button>' +
+            '<button class="mini-btn" id="cdRemoveSel" disabled>移出班级</button>' +
+            '<button class="mini-btn danger" id="cdDeleteSel" disabled>从名册删除</button>' +
+            '<button class="mini-btn" id="cdBatchCancel">退出批量管理</button></span>') +
           '<button class="mini-btn" id="cdBack">返回班级列表</button>' +
         '</div>' +
         (archived ? '' : '<div class="hint" style="margin:0 0 8px">录入新学生请用前两个按钮（会自动归入本班并开通 AI 提问权限）；' +
-          '「从名册添加」用于把名册里已有的学生选进本班，「从名册并入」用于修复历史数据。</div>') +
+          '「从名册添加」用于把名册里已有的学生选进本班，「从名册并入」用于修复历史数据，' +
+          '「批量管理」可勾选多名学生后统一移出班级或从名册删除。</div>') +
         '<div class="page-sub" style="margin:0 0 8px">学生名单 <b>' + members.length + '</b> 人</div>' +
         '<table id="cdTable" style="width:100%;border-collapse:collapse"></table>' +
         '<div class="pager" id="cdPager"></div>' +
@@ -1334,13 +1168,22 @@
     if (importBtn) importBtn.addEventListener('click', () => openImportStudents({ id: classId, name: c.name || '' }));
     const syncBtn = $('cdSync');
     if (syncBtn) syncBtn.addEventListener('click', () => openSyncMembers(classId, c.name || ''));
+    if ($('cdBatch')) $('cdBatch').addEventListener('click', () => enterClassBatch(classId, archived));
+    if ($('cdBatchCancel')) $('cdBatchCancel').addEventListener('click', () => exitClassBatch(classId, archived));
+    if ($('cdSelClear')) $('cdSelClear').addEventListener('click', () => { classMemberSelected.clear(); updateClassBatchBar(); renderClassMemberTable(classId, archived); });
+    if ($('cdSelAll')) $('cdSelAll').addEventListener('click', () => selectAllClassMembers());
+    if ($('cdRemoveSel')) $('cdRemoveSel').addEventListener('click', () => batchRemoveClassMembers(classId));
+    if ($('cdDeleteSel')) $('cdDeleteSel').addEventListener('click', () => batchDeleteFromRoster());
     classMembersCache = members;
     classMemberPage.page = 1;
+    classDetailCtx = { classId, archived };
+    classMemberSelectMode = false;
+    classMemberSelected.clear();
     renderClassMemberTable(classId, archived);
   }
 
   // 班级名单分页渲染（复用学生列表的分页控件）
-  function renderClassMemberTable(classId, archived) {
+ function renderClassMemberTable(classId, archived) {
     const table = $('cdTable');
     if (!table) return;
     const total = classMembersCache.length;
@@ -1348,38 +1191,148 @@
     if (classMemberPage.page > pages) classMemberPage.page = pages;
     const start = (classMemberPage.page - 1) * classMemberPage.size;
     const pageItems = classMembersCache.slice(start, start + classMemberPage.size);
+    const selectable = !archived && classMemberSelectMode;
 
     let rows = '<tr style="background:var(--panel-soft);text-align:left">' +
+      (selectable ? '<th style="padding:10px;width:36px"><input type="checkbox" id="cdPickAll" /></th>' : '') +
       '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>注册状态</th><th>最近登录</th>' +
       (archived ? '' : '<th style="text-align:right">操作</th>') + '</tr>';
     pageItems.forEach((m) => {
       rows += '<tr style="border-top:1px solid var(--border)">' +
-        '<td style="padding:10px">' + esc(m.name) + '</td>' +
+        (selectable ? '<td style="padding:10px"><input type="checkbox" class="cd-pick" value="' +
+          esc(m.doc_id) + '"' + (classMemberSelected.has(m.doc_id) ? ' checked' : '') + ' /></td>' : '') +
+        '<td style="padding:10px"><a class="link" href="#/student-detail?id=' + esc(m.doc_id) + '">' +
+          esc(m.name) + '</a></td>' +
         '<td>' + esc(m.student_no) + '</td>' +
         '<td>' + esc(m.school) + '</td>' +
         '<td>' + (m.registered ? '<span class="ok">已注册</span>' : '<span class="pending">未注册</span>') + '</td>' +
         '<td style="color:#6a7688">' + fmtDate(m.last_login_at) + '</td>' +
         (archived ? '' : '<td style="text-align:right">' +
-          '<button class="mini-btn danger" data-remove="' + esc(m.doc_id) + '" data-name="' +
-          esc(m.name) + '">移出班级</button></td>') +
+          '<button class="mini-btn" data-edit="' + esc(m.doc_id) + '" data-school="' + esc(m.school) +
+            '" data-class="' + esc(m.class_name) + '" data-name="' + esc(m.name) +
+            '" data-no="' + esc(m.student_no) + '">编辑</button> ' +
+          '<button class="mini-btn" data-remove="' + esc(m.doc_id) + '" data-name="' +
+            esc(m.name) + '">移出班级</button> ' +
+          '<button class="mini-btn danger" data-del="' + esc(m.doc_id) + '" data-name="' +
+            esc(m.name) + '">从名册删除</button></td>') +
         '</tr>';
     });
     if (!pageItems.length) {
-      rows += '<tr><td colspan="' + (archived ? 5 : 6) +
+      rows += '<tr><td colspan="' + ((archived ? 5 : 6) + (selectable ? 1 : 0)) +
         '" style="padding:26px;text-align:center;color:#9aa5b2">' +
         (archived ? '该班级没有学生' : '该班级还没有学生，点击「+ 添加学生」加入') + '</td></tr>';
     }
     table.innerHTML = rows;
 
+    table.querySelectorAll('button[data-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => openEditStudent(btn));
+    });
     table.querySelectorAll('button[data-remove]').forEach((btn) => {
       btn.addEventListener('click', () => removeClassMember(classId, btn.dataset.remove, btn.dataset.name));
     });
+    table.querySelectorAll('button[data-del]').forEach((btn) => {
+      btn.addEventListener('click', () => removeStudent(btn));
+    });
+    table.querySelectorAll('.cd-pick').forEach((box) => {
+      box.addEventListener('change', () => {
+        if (box.checked) classMemberSelected.add(box.value);
+        else classMemberSelected.delete(box.value);
+        updateClassBatchBar();
+      });
+    });
+    const pickAll = $('cdPickAll');
+    if (pickAll) {
+      const ids = pageItems.map((m) => m.doc_id);
+      pickAll.checked = ids.length > 0 && ids.every((id) => classMemberSelected.has(id));
+      pickAll.addEventListener('change', () => {
+        ids.forEach((id) => {
+          if (pickAll.checked) classMemberSelected.add(id);
+          else classMemberSelected.delete(id);
+        });
+        renderClassMemberTable(classId, archived);
+        updateClassBatchBar();
+      });
+    }
 
     const pager = $('cdPager');
     if (pager) {
       pager.innerHTML = pagerHtml(classMemberPage.page, pages, total, classMemberPage.size);
       bindPager(pager, classMemberPage, () => renderClassMemberTable(classId, archived));
     }
+  }
+
+  // ---- 班级名单的批量管理（勾选后统一移出班级 / 从名册删除）----
+  function enterClassBatch(classId, archived) {
+    classMemberSelectMode = true;
+    classMemberSelected.clear();
+    const bar = $('cdBatchBar');
+    if (bar) bar.classList.remove('hidden');
+    updateClassBatchBar();
+    renderClassMemberTable(classId, archived);
+  }
+
+  function exitClassBatch(classId, archived) {
+    classMemberSelectMode = false;
+    classMemberSelected.clear();
+    const bar = $('cdBatchBar');
+    if (bar) bar.classList.add('hidden');
+    renderClassMemberTable(classId, archived);
+  }
+
+  function updateClassBatchBar() {
+    const count = $('cdSelCount');
+    if (count) count.textContent = String(classMemberSelected.size);
+    const removeBtn = $('cdRemoveSel');
+    if (removeBtn) removeBtn.disabled = classMemberSelected.size === 0;
+    const deleteBtn = $('cdDeleteSel');
+    if (deleteBtn) deleteBtn.disabled = classMemberSelected.size === 0;
+  }
+
+  function selectAllClassMembers() {
+    const total = classMembersCache.length;
+    const pages = Math.max(1, Math.ceil(total / classMemberPage.size));
+    const page = Math.min(classMemberPage.page, pages);
+    const start = (page - 1) * classMemberPage.size;
+    const ids = classMembersCache.slice(start, start + classMemberPage.size).map((m) => m.doc_id);
+    const allSelected = ids.length > 0 && ids.every((id) => classMemberSelected.has(id));
+    ids.forEach((id) => {
+      if (allSelected) classMemberSelected.delete(id);
+      else classMemberSelected.add(id);
+    });
+    const btn = $('cdSelAll');
+    if (btn) btn.textContent = allSelected ? '全选本页' : '取消全选本页';
+    renderClassMemberTable(classDetailCtx.classId, classDetailCtx.archived);
+    updateClassBatchBar();
+  }
+
+  async function batchRemoveClassMembers(classId) {
+    const ids = Array.from(classMemberSelected);
+    if (!ids.length) return;
+    if (!confirm('将把选中的 ' + ids.length + ' 名学生移出本班。\n\n学生记录与学习数据保留，移出后显示为「未分班」。是否继续？')) return;
+    const res = await api.removeClassMembers(classId, ids);
+    if (res && res.ok && (res.removed || 0) > 0) {
+      classMemberSelected.clear();
+      await renderRoute();
+      return;
+    }
+    alert(classErrText(res, '移出失败'));
+  }
+
+  async function batchDeleteFromRoster() {
+    const ids = Array.from(classMemberSelected);
+    if (!ids.length) return;
+    if (!confirm('将从名册中删除选中的 ' + ids.length + ' 名学生，并撤销其 AI 提问白名单。\n\n' +
+      '不会删除学生的微信注册账号与学习数据；此操作不可撤销。是否继续？')) return;
+    let okCount = 0;
+    let failCount = 0;
+    for (const id of ids) {
+      const res = await api.deleteStudent(id);
+      if (res && res.ok) okCount += 1;
+      else failCount += 1;
+    }
+    alert('已从名册删除 ' + okCount + ' 条' + (failCount ? '，失败 ' + failCount + ' 条' : ''));
+    classMemberSelected.clear();
+    await renderRoute();
   }
 
   // 添加学生：候选由服务端给出（仅本班负责教师名册、未加入本班的学生）
