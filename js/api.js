@@ -132,6 +132,14 @@
     resetData(payload) {
       return callTeacher('data.reset', payload || {});
     },
+    // 数据维护·按人清理（仅超管）：列出可清理的人（带每人数据量）
+    listPersonData(payload) {
+      return callTeacher('data.personList', payload || {});
+    },
+    // 数据维护·按人清理：只删勾选这些人的数据（默认 dry_run 预览）
+    purgePersonData(payload) {
+      return callTeacher('data.personPurge', payload || {});
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },
