@@ -177,15 +177,24 @@
       // 按人清理：测试数据通常是特定几个人产生的，按人核对最稳
       html += '<div class="card"><div class="card-title">数据维护 · 按人清理（仅超级管理员）</div>' +
         '<div class="hint">测试数据通常是<b>特定几个人</b>产生的。这里按人清理：勾选具体的人，只删这些人的数据，' +
-        '<b>其他人的数据一条都不会动</b>。默认只清行为数据；注册账号、名册与 AI 白名单需要你显式勾选才会一并删除。</div>' +
+        '<b>其他人的数据一条都不会动</b>。默认只清行为数据；注册账号、名册与 AI 白名单需要你显式勾选才会一并删除。' +
+        '<br>列表里的 openid 是"微信登录标识"（<b>不是微信号</b>，同一微信号在不同小程序里不同），用来区分"来过几个人、何时来过"，' +
+        '所以<b>未注册的账号也是触达数据，建议保留</b>，只在需要干净列表时用过滤隐藏。</div>' +
         '<div class="filter-row">' +
           '<input class="filter-input" id="personKeyword" placeholder="搜索 姓名 / 学号 / 学校" />' +
           '<button class="mini-btn" id="personSearchBtn">查询</button>' +
           '<button class="mini-btn" id="personAllBtn">全选本页</button>' +
           '<button class="mini-btn" id="personClearBtn">清空选择</button>' +
           '<label style="font-size:13px;display:flex;align-items:center;gap:4px">' +
-            '<input type="checkbox" id="hideEmptyAccounts" checked /> 只看有信息的（隐藏空账号）' +
+            '<input type="checkbox" id="hideEmptyAccounts" /> 只看有信息的（隐藏未注册空账号）' +
           '</label>' +
+          '<select class="filter-select" id="stageFilter">' +
+            '<option value="">全部阶段</option>' +
+            '<option value="仅登录未注册">仅登录未注册（触达）</option>' +
+            '<option value="已注册未入册">已注册未入册</option>' +
+            '<option value="已入册">已入册</option>' +
+            '<option value="仅名册/白名单残留">仅名册/白名单残留</option>' +
+          '</select>' +
         '</div>' +
         '<div id="personList"></div>' +
         '<div class="hint" style="margin-top:12px">清理范围（可多选）：</div>' +
@@ -198,7 +207,7 @@
           '<button class="mini-btn" id="personPreviewBtn">预览选中人的数据</button>' +
           '<button class="mini-btn danger" id="personPurgeBtn">清理选中的人…</button>' +
           '<button class="mini-btn" id="legacyRosterBtn">清理无姓名的旧白名单…</button>' +
-          '<button class="mini-btn" id="emptyAccountsBtn">清理空账号…</button>' +
+          '<button class="mini-btn" id="emptyAccountsBtn">清理未注册空账号（会丢触达记录）…</button>' +
         '</div>' +
         '<div id="personResult"></div></div>';
 
@@ -232,6 +241,7 @@
       $('legacyRosterBtn').addEventListener('click', legacyRosterFlow);
       $('emptyAccountsBtn').addEventListener('click', emptyAccountsFlow);
       $('hideEmptyAccounts').addEventListener('change', applyPersonFilter);
+      $('stageFilter').addEventListener('change', applyPersonFilter);
       $('resetPreviewBtn').addEventListener('click', previewResetData);
       $('resetRunBtn').addEventListener('click', confirmResetData);
       await loadPersonList(false);
@@ -289,14 +299,37 @@
     applyPersonFilter(res.total);
   }
 
-  // 客户端过滤：默认隐藏"已登录但从未注册"的空账号（无姓名、无学号）
+  // 客户端过滤：可选隐藏"已登录但从未注册"的空账号；并支持按阶段筛选。
+  // 注意：默认显示全部——这些记录是"小程序触达/吸引度"的原始数据，删掉就没了。
   function applyPersonFilter(totalCount) {
     const hideEl = $('hideEmptyAccounts');
-    const hide = !hideEl || hideEl.checked;
-    personRows = hide
-      ? personRowsAll.filter((r) => (String(r.name || '').trim() || String(r.student_no || '').trim()))
-      : personRowsAll.slice();
+    const hide = !!(hideEl && hideEl.checked);
+    const stageEl = $('stageFilter');
+    const stage = String((stageEl && stageEl.value) || '');
+    personRows = personRowsAll.filter((r) => {
+      if (hide && !String(r.name || '').trim() && !String(r.student_no || '').trim()) return false;
+      if (stage && String(r.stage || '') !== stage) return false;
+      return true;
+    });
     renderPersonTable(totalCount);
+  }
+
+  // 触达概览：用列表数据现算各阶段人数（不额外请求接口）
+  function touchOverviewHtml() {
+    const stages = ['仅登录未注册', '已注册未入册', '已入册', '仅名册/白名单残留'];
+    const counts = {};
+    stages.forEach((s) => { counts[s] = 0; });
+    personRowsAll.forEach((r) => {
+      const key = String(r.stage || '');
+      if (counts[key] === undefined) counts[key] = 0;
+      counts[key] += 1;
+    });
+    return '<div class="stat-grid" style="margin-bottom:10px">' +
+      stages.map((s) => '<div class="stat-card soft"><div class="stat-num">' + counts[s] +
+        '</div><div class="stat-label">' + esc(s) + '</div></div>').join('') +
+      '<div class="stat-card soft"><div class="stat-num">' + personRowsAll.length +
+        '</div><div class="stat-label">合计</div></div>' +
+      '</div>';
   }
 
   function renderPersonTable(totalCount) {
@@ -306,11 +339,15 @@
       return;
     }
     const th = 'text-align:left;padding:6px;border-bottom:1px solid #e6ebf2;color:#8794a8;font-weight:600;font-size:12px';
-    let html = '<div class="hint">匹配 ' + (totalCount || personRows.length) + ' 人，已选 <b>' + personSelected.size + '</b> 人（按数据量从多到少排列）</div>' +
+    let html = touchOverviewHtml() +
+      '<div class="hint">匹配 ' + (totalCount || personRows.length) + ' 人，当前显示 ' + personRows.length +
+      ' 人，已选 <b>' + personSelected.size + '</b> 人（按数据量从多到少排列）</div>' +
       '<div style="overflow:auto;max-height:420px">' +
       '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>' +
         '<th style="' + th + '">选</th><th style="' + th + '">姓名</th><th style="' + th + '">学号</th>' +
-        '<th style="' + th + '">学校</th><th style="' + th + '">数据量</th><th style="' + th + '">来源</th>' +
+        '<th style="' + th + '">学校</th><th style="' + th + '">阶段</th>' +
+        '<th style="' + th + '">openid（微信登录标识，非微信号）</th><th style="' + th + '">最近登录</th>' +
+        '<th style="' + th + '">数据量</th><th style="' + th + '">来源</th>' +
       '</tr></thead><tbody>';
     personRows.forEach((r) => {
       const sourceTags = [];
@@ -318,11 +355,15 @@
       if (r.in_class_roster) sourceTags.push('名册');
       if (r.in_roster) sourceTags.push('白名单');
       if (r.nameless_roster) sourceTags.push('旧记录·无姓名');
+      const lastLogin = r.last_login_at ? fmtDate(r.last_login_at) : '—';
       html += '<tr>' +
         '<td style="padding:6px"><input type="checkbox" data-key="' + esc(r.key) + '"' + (personSelected.has(r.key) ? ' checked' : '') + ' /></td>' +
         '<td style="padding:6px">' + esc(r.name || '—') + '</td>' +
         '<td style="padding:6px">' + esc(r.student_no || '—') + '</td>' +
         '<td style="padding:6px">' + esc(r.school || '—') + '</td>' +
+        '<td style="padding:6px">' + esc(r.stage || '—') + '</td>' +
+        '<td style="padding:6px;font-size:11px;color:#8794a8;word-break:break-all;max-width:220px">' + esc(r.openid || '—') + '</td>' +
+        '<td style="padding:6px">' + esc(lastLogin) + '</td>' +
         '<td style="padding:6px"><b>' + (r.total || 0) + '</b>　<span style="color:#8794a8">' + esc(personCountsSummary(r.counts)) + '</span></td>' +
         '<td style="padding:6px">' + esc(sourceTags.join(' · ')) +
           (r.owner_teacher_name ? '　<span style="color:#8794a8">' + esc(r.owner_teacher_name) + '</span>' : '') + '</td>' +
@@ -430,7 +471,9 @@
       (sampleDates.length ? '（示例时间：' + esc(sampleDates.slice(0, 8).join('、')) + '）' : '') + '</div>';
     openModal('确认清理空账号',
       '<div class="hint">将删除 <b>' + total + '</b> 条"已登录但从未注册"的账号（无学校 / 无姓名 / 无学号）。' +
-      '<br>这类记录不属于名册、不在白名单、没有学习数据；删除后该微信号下次打开小程序会重新生成一条空账号，属正常现象。' +
+      '<br>⚠️ 这类记录本身是<b>小程序触达/吸引度的原始数据</b>（能反映"有多少人打开过、什么时间来"），删掉后就统计不回来了。' +
+      '它们不属于名册、不在白名单、没有学习数据；一般建议<b>保留</b>，只在需要干净列表时用上面的过滤隐藏。' +
+      '<br>删除后该微信号下次打开小程序会重新生成一条空账号，属正常现象。' +
       '<br><b>已完成注册的学生账号不会被删除。</b></div>' +
       '<div class="hint" style="margin:12px 0 6px">请输入条数 <b>' + total + '</b> 以确认：</div>' +
       '<div class="fld"><input class="filter-input" id="emptyConfirmInput" placeholder="输入 ' + total + '" /></div>',
