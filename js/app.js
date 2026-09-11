@@ -145,7 +145,108 @@
     else if (key === 'student-detail') await renderStudentDetail(content);
     else if (key === 'plp') renderPlaceholder(content, '点线面分析');
     else if (key === 'ai') await renderAi(content);
-    else renderPlaceholder(content, '系统设置');
+    else await renderSettings(content);
+  }
+
+  // ---- 设置页：个人信息 + 数据维护（仅超管）----
+  const RESET_COLLECTION_LABELS = {
+    learning_sessions: '学习会话',
+    learning_records: '学习行为事件',
+    ai_conversations: 'AI 会话',
+    ai_messages: 'AI 消息',
+    survey_responses: '问卷作答',
+    survey_invites: '问卷邀请'
+  };
+
+  function resetRowsHtml(counts) {
+    let html = '';
+    Object.keys(counts || {}).forEach((key) => {
+      html += '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #eef1f6">' +
+        '<span>' + esc(RESET_COLLECTION_LABELS[key] || key) + '</span><b>' + (counts[key] || 0) + ' 条</b></div>';
+    });
+    return html;
+  }
+
+  async function renderSettings(container) {
+    const me = currentTeacher || {};
+    let html = '<div class="card"><div class="card-title">个人信息</div>' +
+      '<div class="hint">账号：<b>' + esc(me.username || '') + '</b>　姓名：<b>' + esc(me.name || '') +
+      '</b>　角色：<b>' + (isSuper() ? '超级管理员' : '普通教师') + '</b></div></div>';
+
+    if (isSuper()) {
+      html += '<div class="card"><div class="card-title">数据维护（仅超级管理员）</div>' +
+        '<div class="hint">正式发版前可用它清空<b>测试期产生的过程数据</b>，使驾驶舱与各分析页从 0 开始。' +
+        '只允许清理过程表：学习会话、学习行为事件、AI 会话、AI 消息、问卷作答、问卷邀请；' +
+        '<b>教师账号、班级、学生名册与 AI 白名单一律不会被动到</b>。</div>' +
+        '<div class="tool-row">' +
+          '<button class="mini-btn" id="resetPreviewBtn">预览待清理数据</button>' +
+          '<button class="mini-btn danger" id="resetRunBtn">清空过程数据…</button>' +
+        '</div>' +
+        '<div id="resetResult"></div></div>';
+    }
+    container.innerHTML = html;
+
+    if (isSuper()) {
+      $('resetPreviewBtn').addEventListener('click', previewResetData);
+      $('resetRunBtn').addEventListener('click', confirmResetData);
+    }
+  }
+
+  async function previewResetData() {
+    const box = $('resetResult');
+    box.innerHTML = '<div class="hint">正在统计…</div>';
+    const res = await api.resetData({ dry_run: true });
+    if (!res || !res.ok) {
+      box.innerHTML = '<div class="form-err">预览失败：' + esc((res && res.msg) || '未知错误') + '</div>';
+      return;
+    }
+    box.innerHTML = resetRowsHtml(res.counts) +
+      '<div class="hint" style="margin:10px 0 0">合计 <b>' + (res.total || 0) + '</b> 条待清理</div>';
+  }
+
+  async function confirmResetData() {
+    const box = $('resetResult');
+    box.innerHTML = '<div class="hint">正在统计…</div>';
+    const pre = await api.resetData({ dry_run: true });
+    if (!pre || !pre.ok) {
+      box.innerHTML = '<div class="form-err">统计失败：' + esc((pre && pre.msg) || '未知错误') + '</div>';
+      return;
+    }
+    const total = pre.total || 0;
+    box.innerHTML = '';
+    if (!total) {
+      box.innerHTML = '<div class="hint">当前没有可清理的过程数据（0 条）。</div>';
+      return;
+    }
+    openModal('确认清空过程数据',
+      resetRowsHtml(pre.counts) +
+      '<div class="hint" style="margin:12px 0 6px">该操作<b>不可恢复</b>。请输入合计条数 <b>' + total + '</b> 以确认：</div>' +
+      '<div class="fld"><input class="filter-input" id="resetConfirmInput" placeholder="输入 ' + total + '" /></div>',
+      '<button class="mini-btn" id="resetCancelBtn">取消</button>' +
+      '<button class="mini-btn danger" id="resetConfirmBtn">确认清空</button>');
+    $('resetCancelBtn').addEventListener('click', closeModal);
+    $('resetConfirmBtn').addEventListener('click', async () => {
+      const el = $('resetConfirmInput');
+      const input = String((el && el.value) || '').trim();
+      if (input !== String(total)) {
+        alert('输入的条数与合计不一致（应为 ' + total + '），已取消本次操作');
+        return;
+      }
+      const res = await api.resetData({ dry_run: false, confirm_count: total });
+      closeModal();
+      const out = $('resetResult');
+      if (!res || !res.ok) {
+        out.innerHTML = '<div class="form-err">清理失败：' + esc((res && res.msg) || '未知错误') + '</div>';
+        return;
+      }
+      let html = '<div class="hint">已清理 <b>' + (res.total || 0) + '</b> 条：</div>';
+      Object.keys(res.removed || {}).forEach((key) => {
+        html += '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid #eef1f6">' +
+          '<span>' + esc(RESET_COLLECTION_LABELS[key] || key) + '</span><b>' + (res.removed[key] || 0) + ' 条</b></div>';
+      });
+      html += '<div class="hint" style="margin:10px 0 0">回「驾驶舱」刷新即应从 0 开始；本次操作已记入 maintenance_logs。</div>';
+      out.innerHTML = html;
+    });
   }
 
   async function renderDashboard(container) {

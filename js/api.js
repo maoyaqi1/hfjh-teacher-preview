@@ -126,6 +126,12 @@
     archiveClass(classId, archived) {
       return callTeacher('class.archive', { class_id: classId, archived: archived !== false });
     },
+    // 数据维护（仅超级管理员）：清理"过程数据"（学习会话/行为事件/AI 会话与消息/问卷）。
+    // 默认 dry_run 预览；真删需带 dry_run:false 与 confirm_count。
+    // 名册与账号类集合（teachers/classes/students/roster/users）不在白名单，服务端会拒绝。
+    resetData(payload) {
+      return callTeacher('data.reset', payload || {});
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },
