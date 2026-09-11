@@ -594,7 +594,10 @@
       const payload = Object.assign(buildPayload(), { dry_run: false, confirm_count: matched });
       const res = await api.purgeStudents(payload);
       if (!res || !res.ok) {
-        $('pgErr').textContent = classErrText(res, '删除失败');
+        const known = !!(res && (res.msg || (res.code && CLASS_ERROR_TEXT[res.code])));
+        $('pgErr').textContent = known
+          ? classErrText(res)
+          : '服务未返回结果（多为调用超时或被中断）。请先点「预览匹配记录」核对剩余条数，再继续删除。';
         $('pgCommit').disabled = false;
         return;
       }
