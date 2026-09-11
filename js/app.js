@@ -1362,7 +1362,8 @@
   // ---- 班级管理（REQ-002 第一阶段）----
   // 数据关系：students.class_id → classes._id 是唯一权威关联；students.class_name 是兼容展示快照。
   // 前端只调用 class.* 接口，不直接改写学生的 class_id / class_name；权限由服务端强制，失败照实显示。
-  const classFilter = { keyword: '', status: '' }; // status: '' = 进行中（服务端默认）| 'archived' | 'all'
+  // 默认看「全部」——停用的班级也要留在列表里（置灰显示），不能直接消失
+  const classFilter = { keyword: '', status: 'all' }; // status: '' = 仅进行中 | 'archived' | 'all'
   const classMemberPage = { page: 1, size: 20 };
   let classMembersCache = [];
   let classDetailCtx = { classId: '', archived: false };
@@ -1417,9 +1418,9 @@
         '<div class="filter-row">' +
           '<input id="clsKeyword" class="filter-input" placeholder="搜索班级名称或学校" />' +
           '<select id="clsStatus" class="filter-select">' +
-            '<option value="">进行中</option>' +
-            '<option value="archived">已停用</option>' +
-            '<option value="all">全部</option>' +
+            '<option value="all">全部（含已停用）</option>' +
+            '<option value="">仅进行中</option>' +
+            '<option value="archived">仅已停用</option>' +
           '</select>' +
           '<button id="clsSearch" class="login-btn filter-btn">搜索</button>' +
         '</div>' +
@@ -1472,10 +1473,19 @@
       if (!archived) {
         ops += ' <button class="mini-btn danger" data-archive="' + esc(c.id) + '" data-name="' +
           esc(c.name) + '">停用</button>';
+      } else {
+        ops += ' <button class="mini-btn" data-restore="' + esc(c.id) + '" data-name="' +
+          esc(c.name) + '">恢复</button>';
       }
-      html += '<tr style="border-top:1px solid var(--border)">' +
-        '<td style="padding:10px"><a class="link" href="#/class-detail?id=' + esc(c.id) + '">' +
-          esc(c.name) + '</a></td>' +
+      // 已停用的班级置灰显示（仍留在列表里，可查看、可恢复）
+      const rowStyle = archived
+        ? 'border-top:1px solid var(--border);background:#f7f9fc;color:#9aa5b2'
+        : 'border-top:1px solid var(--border)';
+      html += '<tr style="' + rowStyle + '">' +
+        '<td style="padding:10px"><a class="link" href="#/class-detail?id=' + esc(c.id) + '"' +
+          (archived ? ' style="color:#9aa5b2"' : '') + '>' +
+          esc(c.name) + '</a>' +
+          (archived ? ' <span style="color:#b3bcc7;font-size:12px">（已停用，可恢复）</span>' : '') + '</td>' +
         '<td>' + (c.school ? esc(c.school) : '<span style="color:#9aa5b2">—</span>') + '</td>' +
         (superUser ? '<td style="color:#6a7688">' + esc(c.owner_teacher_name || '—') + '</td>' : '') +
         '<td>' + (c.member_count || 0) + '</td>' +
@@ -1503,6 +1513,9 @@
     });
     table.querySelectorAll('button[data-archive]').forEach((btn) => {
       btn.addEventListener('click', () => archiveClass(btn.dataset.archive, btn.dataset.name));
+    });
+    table.querySelectorAll('button[data-restore]').forEach((btn) => {
+      btn.addEventListener('click', () => restoreClass(btn.dataset.restore, btn.dataset.name));
     });
   }
 
@@ -1550,12 +1563,26 @@
   // 停用班级（软删除，不删除学生与学习数据）
   async function archiveClass(classId, name) {
     if (!confirm('确定停用班级「' + name + '」吗？\n\n· 班级不再出现在「进行中」列表\n' +
+      '· 在「全部」列表里会置灰显示，随时可以「恢复」\n' +
       '· 学生名单与学习数据不会被删除\n· 学生仍保留在本班，不会被自动改成未分班')) return;
     const res = await api.archiveClass(classId, true);
     if (res && res.ok) {
       await loadClasses();
     } else {
       alert(classErrText(res, '停用失败'));
+    }
+  }
+
+  // 恢复已停用的班级（后端已支持 archived:false，并会做同名活动班级校验）
+  async function restoreClass(classId, name) {
+    if (!confirm('确定恢复班级「' + name + '」吗？\n\n· 恢复后重新出现在「进行中」列表\n' +
+      '· 学生名单、白名单与学习数据都在，恢复后立即可用\n' +
+      '· 若已存在同名活动班级，需先改名再恢复')) return;
+    const res = await api.archiveClass(classId, false);
+    if (res && res.ok) {
+      await loadClasses();
+    } else {
+      alert(classErrText(res, '恢复失败'));
     }
   }
 
@@ -1606,7 +1633,8 @@
           (archived ? '' : '<button class="mini-btn" id="cdImport">批量导入到本班</button>') +
           (archived ? '' : '<button class="mini-btn" id="cdAdd">从名册添加</button>') +
           (archived ? '' : '<button class="mini-btn" id="cdSync">从名册并入</button>') +
-          (archived ? '' : '<button class="mini-btn" id="cdBatch">批量管理</button>') +
+        (archived ? '' : '<button class="mini-btn" id="cdBatch">批量管理</button>') +
+        (archived ? '<button class="mini-btn" id="cdRestore">恢复本班</button>' : '') +
           (archived ? '' : '<span class="purge-bar hidden" id="cdBatchBar">已选 <b id="cdSelCount">0</b> 条' +
             '<button class="mini-btn" id="cdSelAll">全选本页</button>' +
             '<button class="mini-btn" id="cdSelClear">清空选择</button>' +
@@ -1634,6 +1662,18 @@
     const syncBtn = $('cdSync');
     if (syncBtn) syncBtn.addEventListener('click', () => openSyncMembers(classId, c.name || ''));
     if ($('cdBatch')) $('cdBatch').addEventListener('click', () => enterClassBatch(classId, archived));
+    if ($('cdRestore')) {
+      $('cdRestore').addEventListener('click', async () => {
+        if (!confirm('确定恢复班级「' + (c.name || '') + '」吗？\n\n' +
+          '· 恢复后重新出现在「进行中」列表\n· 名单、白名单与学习数据都在，立即可用')) return;
+        const r = await api.archiveClass(classId, false);
+        if (r && r.ok) {
+          renderRoute();
+        } else {
+          alert(classErrText(r, '恢复失败'));
+        }
+      });
+    }
     if ($('cdBatchCancel')) $('cdBatchCancel').addEventListener('click', () => exitClassBatch(classId, archived));
     if ($('cdSelClear')) $('cdSelClear').addEventListener('click', () => { classMemberSelected.clear(); updateClassBatchBar(); renderClassMemberTable(classId, archived); });
     if ($('cdSelAll')) $('cdSelAll').addEventListener('click', () => selectAllClassMembers());
