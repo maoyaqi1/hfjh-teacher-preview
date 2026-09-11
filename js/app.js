@@ -288,9 +288,7 @@
         : '') +
       '<div class="card">' +
         '<div class="tool-row">' +
-          '<button class="login-btn filter-btn" id="stuAdd">+ 新增学生</button>' +
-          '<button class="mini-btn" id="stuTpl">下载导入模板</button>' +
-          '<button class="mini-btn" id="stuImport">批量导入</button>' +
+          '<button class="login-btn filter-btn" id="stuGoClasses">去「班级」页录入学生</button>' +
           (superUser ? '<button class="mini-btn danger" id="stuPurge">批量删除</button>' : '') +
           (superUser
             ? '<span class="purge-bar hidden" id="purgeBar">' +
@@ -302,6 +300,8 @@
               '</span>'
             : '') +
         '</div>' +
+        '<div class="hint" style="margin:0 0 8px">录入学生已统一到「班级」页：打开班级后点「+ 新录入学生」或「批量导入到本班」，' +
+          '学生会自动归入该班并开通 AI 提问权限。本页用于查看、筛选、修正与清理名册。</div>' +
         '<div class="filter-row">' +
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
           '<select id="stuSchool" class="filter-select"></select>' +
@@ -320,9 +320,7 @@
 
     $('stuKeyword').value = studentFilter.keyword;
     $('stuReg').value = studentFilter.registered;
-    $('stuAdd').addEventListener('click', openAddStudent);
-    $('stuTpl').addEventListener('click', downloadStudentTemplate);
-    $('stuImport').addEventListener('click', openImportStudents);
+    $('stuGoClasses').addEventListener('click', () => { location.hash = '#/classes'; });
     const purgeBtn = $('stuPurge');
     if (purgeBtn) purgeBtn.addEventListener('click', enterPurgeMode);
     if ($('purgeCancel')) $('purgeCancel').addEventListener('click', exitPurgeMode);
@@ -785,50 +783,6 @@
     return { class_id: raw };
   }
 
-  async function openAddStudent() {
-    await refreshTeacherClasses();
-    const classField = teacherClassOptions.length
-      ? '<div class="fld"><label>班级</label>' + classSelectHtml('fClass', '') + '</div>'
-      : '<div class="fld"><label>班级</label><input id="fClass" class="filter-input" placeholder="如 机械2401" /></div>';
-    openModal('新增学生',
-      '<div class="form-grid">' +
-        '<div class="fld"><label>学校 <i>*</i></label><input id="fSchool" class="filter-input" placeholder="如 安徽建筑大学" /></div>' +
-        classField +
-        '<div class="fld"><label>姓名 <i>*</i></label><input id="fName" class="filter-input" placeholder="学生姓名" /></div>' +
-        '<div class="fld"><label>学号 <i>*</i></label><input id="fNo" class="filter-input" placeholder="学号（唯一）" /></div>' +
-      '</div>' +
-      '<div class="hint">保存后该学号将自动开通 AI 教师提问权限。' +
-      (teacherClassOptions.length ? '班级从你创建的班级中选择，未分班可留空。' : '还没有班级时可先留空，之后再建班级并入。') + '</div>' +
-      '<div id="fErr" class="form-err"></div>',
-      '<button class="mini-btn" id="fCancel">取消</button>' +
-      '<button class="login-btn filter-btn" id="fSave">保存</button>');
-
-    $('fCancel').addEventListener('click', closeModal);
-    $('fSave').addEventListener('click', async () => {
-      const payload = {
-        school: $('fSchool').value.trim(),
-        name: $('fName').value.trim(),
-        student_no: $('fNo').value.trim()
-      };
-      Object.assign(payload, $('fClass').tagName === 'SELECT'
-        ? classFieldPayload('fClass')
-        : { class_name: $('fClass').value.trim() });
-      $('fErr').textContent = '';
-      const identErr = studentIdentityError(payload.name, payload.student_no);
-      if (identErr) { $('fErr').textContent = identErr; return; }
-      $('fSave').disabled = true;
-      const res = await api.createStudent(payload);
-      $('fSave').disabled = false;
-      if (res && res.ok) {
-        closeModal();
-        await loadStudents();
-      } else {
-        $('fErr').textContent = (res && res.msg) || '保存失败';
-      }
-    });
-    setTimeout(() => { const el = $('fSchool'); if (el) el.focus(); }, 50);
-  }
-
   // ---- 下载导入模板 ----
   function downloadStudentTemplate() {
     const csv = '\uFEFF学校,班级,姓名,学号\n' +
@@ -911,6 +865,7 @@
       '<div class="fld"><label>或直接粘贴内容（每行一条，逗号分隔）</label>' +
       '<textarea id="impText" class="filter-input imp-text" placeholder="安徽建筑大学,机械2401,张三,20240001"></textarea></div>' +
       '<div id="impResult" class="imp-result"></div>',
+      '<button class="mini-btn" id="impTpl">下载导入模板</button>' +
       '<button class="mini-btn" id="impCancel">取消</button>' +
       '<button class="mini-btn" id="impValidate">校验</button>' +
       '<button class="login-btn filter-btn" id="impCommit" disabled>确认导入</button>');
@@ -926,6 +881,7 @@
     };
 
     $('impCancel').addEventListener('click', closeModal);
+    $('impTpl').addEventListener('click', downloadStudentTemplate);
 
     $('impFile').addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
