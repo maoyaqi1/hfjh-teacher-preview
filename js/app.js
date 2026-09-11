@@ -189,7 +189,7 @@
         '<div class="filter-row">' +
           '<label style="font-size:13px"><input type="checkbox" id="scopeBehavior" checked /> 行为数据（学习会话 / 行为事件 / AI 会话与消息 / 问卷）</label>' +
           '<label style="font-size:13px"><input type="checkbox" id="scopeRoster" /> 名册与 AI 白名单（含这些学生的教师备注）</label>' +
-          '<label style="font-size:13px"><input type="checkbox" id="scopeAccount" /> 注册账号（删除后该微信号需重新注册）</label>' +
+          '<label style="font-size:13px"><input type="checkbox" id="scopeAccount" /> 注册账号（删除后该微信号需重新注册；只对"有账号"的行生效）</label>' +
         '</div>' +
         '<div class="tool-row">' +
           '<button class="mini-btn" id="personPreviewBtn">预览选中人的数据</button>' +
@@ -215,7 +215,7 @@
       $('personSearchBtn').addEventListener('click', () => loadPersonList(true));
       $('personKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPersonList(true); });
       $('personAllBtn').addEventListener('click', () => {
-        personRows.forEach((r) => personSelected.add(r.user_id));
+        personRows.forEach((r) => personSelected.add(r.key));
         renderPersonTable();
       });
       $('personClearBtn').addEventListener('click', () => {
@@ -291,25 +291,29 @@
       '<div style="overflow:auto;max-height:420px">' +
       '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>' +
         '<th style="' + th + '">选</th><th style="' + th + '">姓名</th><th style="' + th + '">学号</th>' +
-        '<th style="' + th + '">学校</th><th style="' + th + '">数据量</th><th style="' + th + '">名册</th>' +
+        '<th style="' + th + '">学校</th><th style="' + th + '">数据量</th><th style="' + th + '">来源</th>' +
       '</tr></thead><tbody>';
     personRows.forEach((r) => {
+      const sourceTags = [];
+      sourceTags.push(r.has_account ? '账号' : '无账号');
+      if (r.in_class_roster) sourceTags.push('名册');
+      if (r.in_roster) sourceTags.push('白名单');
       html += '<tr>' +
-        '<td style="padding:6px"><input type="checkbox" data-uid="' + esc(r.user_id) + '"' + (personSelected.has(r.user_id) ? ' checked' : '') + ' /></td>' +
+        '<td style="padding:6px"><input type="checkbox" data-key="' + esc(r.key) + '"' + (personSelected.has(r.key) ? ' checked' : '') + ' /></td>' +
         '<td style="padding:6px">' + esc(r.name || '—') + '</td>' +
         '<td style="padding:6px">' + esc(r.student_no || '—') + '</td>' +
         '<td style="padding:6px">' + esc(r.school || '—') + '</td>' +
         '<td style="padding:6px"><b>' + (r.total || 0) + '</b>　<span style="color:#8794a8">' + esc(personCountsSummary(r.counts)) + '</span></td>' +
-        '<td style="padding:6px">' + (r.in_class_roster ? esc(r.owner_teacher_name || '已录入') : '未录入') +
-          (r.in_roster ? ' · 白名单' : '') + '</td>' +
+        '<td style="padding:6px">' + esc(sourceTags.join(' · ')) +
+          (r.owner_teacher_name ? '　<span style="color:#8794a8">' + esc(r.owner_teacher_name) + '</span>' : '') + '</td>' +
       '</tr>';
     });
     html += '</tbody></table></div>';
     box.innerHTML = html;
     box.querySelectorAll('input[type=checkbox]').forEach((el) => {
       el.addEventListener('change', () => {
-        const uid = el.getAttribute('data-uid');
-        if (el.checked) personSelected.add(uid); else personSelected.delete(uid);
+        const key = el.getAttribute('data-key');
+        if (el.checked) personSelected.add(key); else personSelected.delete(key);
         const tip = box.querySelector('.hint');
         if (tip) tip.innerHTML = tip.innerHTML.replace(/已选 <b>\d+<\/b>/, '已选 <b>' + personSelected.size + '</b>');
       });
@@ -328,7 +332,7 @@
       return;
     }
     out.innerHTML = '<div class="hint">正在统计…</div>';
-    const res = await api.purgePersonData({ user_ids: Array.from(personSelected), scope, dry_run: true });
+    const res = await api.purgePersonData({ targets: Array.from(personSelected), scope, dry_run: true });
     if (!res || !res.ok) {
       out.innerHTML = '<div class="form-err">统计失败：' + esc((res && res.msg) || '未知错误') + '</div>';
       return;
@@ -366,7 +370,7 @@
         alert('输入的数值与人数不一致（应为 ' + count + '），已取消本次操作');
         return;
       }
-      const res = await api.purgePersonData({ user_ids: Array.from(personSelected), scope, dry_run: false, confirm_count: count });
+      const res = await api.purgePersonData({ targets: Array.from(personSelected), scope, dry_run: false, confirm_count: count });
       closeModal();
       const out = $('personResult');
       if (!res || !res.ok) {
