@@ -193,7 +193,9 @@
             '<option value="仅登录未注册">仅登录未注册（触达）</option>' +
             '<option value="已注册未入册">已注册未入册</option>' +
             '<option value="已入册">已入册</option>' +
-            '<option value="仅名册/白名单残留">仅名册/白名单残留</option>' +
+            '<option value="名册已录入·未注册">名册已录入·未注册（待激活的学生）</option>' +
+            '<option value="旧白名单残留·无姓名">旧白名单残留·无姓名</option>' +
+            '<option value="白名单残留·无名册">白名单残留·无名册</option>' +
           '</select>' +
         '</div>' +
         '<div id="personList"></div>' +
@@ -316,7 +318,7 @@
 
   // 触达概览：用列表数据现算各阶段人数（不额外请求接口）
   function touchOverviewHtml() {
-    const stages = ['仅登录未注册', '已注册未入册', '已入册', '仅名册/白名单残留'];
+    const stages = ['仅登录未注册', '已注册未入册', '已入册', '名册已录入·未注册', '旧白名单残留·无姓名'];
     const counts = {};
     stages.forEach((s) => { counts[s] = 0; });
     personRowsAll.forEach((r) => {
@@ -410,6 +412,16 @@
 
   function openPersonConfirm(pre, scope) {
     const count = pre.people_count;
+    // 安全提示：选中的是"名册已录入但学生还没注册"的人时，删名册记录等于把学生移出名单
+    const stageOf = (key) => {
+      const hit = personRowsAll.filter((r) => r.key === key)[0];
+      return hit ? String(hit.stage || '') : '';
+    };
+    const pendingCount = (pre.people || []).filter((p) => stageOf(p.key) === '名册已录入·未注册').length;
+    const pendingWarning = (pendingCount && scope.roster)
+      ? '<div class="form-err" style="margin-top:10px">注意：其中 <b>' + pendingCount +
+        '</b> 位是<b>名册中已录入、但学生还没注册</b>的人（正常待激活）。删除名册记录后，他们需要重新录入才能提问。</div>'
+      : '';
     const warning = scope.account || scope.roster
       ? '<div class="form-err" style="margin-top:10px">注意：本次还会删除' +
         (scope.roster ? ' <b>名册记录与 AI 白名单</b>' : '') +
@@ -419,6 +431,7 @@
       '<div class="hint">即将清理以下 <b>' + count + '</b> 人的数据：</div>' +
       (pre.people || []).map((p) => '<div style="padding:4px 0;font-size:13px">· ' +
         esc(p.name || '—') + '（' + esc(p.student_no || '') + '）　<b>' + (p.total || 0) + '</b> 条</div>').join('') +
+      pendingWarning +
       warning +
       '<div class="hint" style="margin:12px 0 6px">请输入要清理的<b>人数 ' + count + '</b> 以确认：</div>' +
       '<div class="fld"><input class="filter-input" id="personConfirmInput" placeholder="输入 ' + count + '" /></div>',
