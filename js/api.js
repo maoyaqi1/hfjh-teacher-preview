@@ -113,6 +113,10 @@
     classCandidates(classId) {
       return callTeacher('class.candidates', { class_id: classId });
     },
+    // 把名册中已存在但未关联班级实体的学生并入本班（修复"学生页录入、班级页看不到"）
+    syncClassMembers(payload) {
+      return callTeacher('class.syncMembers', payload || {});
+    },
     addClassMembers(classId, docIds) {
       return callTeacher('class.members.add', { class_id: classId, doc_ids: docIds || [] });
     },

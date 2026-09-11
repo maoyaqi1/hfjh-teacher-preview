@@ -658,12 +658,16 @@
     await loadStudents();
   }
   // 编辑单条名册记录（学校 / 班级 / 姓名 / 学号）
-  function openEditStudent(btn) {
+  async function openEditStudent(btn) {
     const d = btn.dataset;
+    await refreshTeacherClasses();
+    const classField = teacherClassOptions.length
+      ? '<div class="fld"><label>班级</label>' + classSelectHtml('eClass', d.class || '') + '</div>'
+      : '<div class="fld"><label>班级</label><input id="eClass" class="filter-input" value="' + esc(d.class || '') + '" /></div>';
     openModal('编辑学生',
       '<div class="form-grid">' +
         '<div class="fld"><label>学校 <i>*</i></label><input id="eSchool" class="filter-input" value="' + esc(d.school || '') + '" /></div>' +
-        '<div class="fld"><label>班级</label><input id="eClass" class="filter-input" value="' + esc(d.class || '') + '" /></div>' +
+        classField +
         '<div class="fld"><label>姓名 <i>*</i></label><input id="eName" class="filter-input" value="' + esc(d.name || '') + '" /></div>' +
         '<div class="fld"><label>学号 <i>*</i></label><input id="eNo" class="filter-input" value="' + esc(d.no || '') + '" /></div>' +
       '</div>' +
@@ -678,13 +682,16 @@
       const identErr = studentIdentityError($('eName').value.trim(), $('eNo').value.trim());
       if (identErr) { $('eErr').textContent = identErr; return; }
       $('eSave').disabled = true;
-      const res = await api.updateStudent({
+      const payload = {
         doc_id: d.edit,
         school: $('eSchool').value.trim(),
-        class_name: $('eClass').value.trim(),
         name: $('eName').value.trim(),
         student_no: $('eNo').value.trim()
-      });
+      };
+      Object.assign(payload, $('eClass').tagName === 'SELECT'
+        ? classFieldPayload('eClass')
+        : { class_name: $('eClass').value.trim() });
+      const res = await api.updateStudent(payload);
       $('eSave').disabled = false;
       if (res && res.ok) {
         closeModal();
@@ -748,15 +755,50 @@
   }
 
   // ---- 新增学生 ----
-  function openAddStudent() {
+  // 当前教师的活动班级（学生弹窗与导入弹窗的班级选择来源）
+  let teacherClassOptions = [];
+  async function refreshTeacherClasses() {
+    const res = await api.listClasses({});
+    teacherClassOptions = (res && res.ok && res.items ? res.items : []).filter((c) => c.status === 'active');
+    return teacherClassOptions;
+  }
+  function classSelectHtml(id, currentName) {
+    let html = '<select id="' + id + '" class="filter-select"><option value="">未分班</option>';
+    teacherClassOptions.forEach((c) => {
+      html += '<option value="' + esc(c.id) + '"' + (c.name === currentName ? ' selected' : '') + '>' +
+        esc(c.name) + '</option>';
+    });
+    if (currentName && !teacherClassOptions.some((c) => c.name === currentName)) {
+      html += '<option value="legacy:' + esc(currentName) + '" selected>' + esc(currentName) +
+        '（原文本，保存时按规则归并）</option>';
+    }
+    html += '</select>';
+    return html;
+  }
+  // 解析班级选择控件的值：'' = 未分班 | legacy:名称 = 保留文本 | 其它 = class_id
+  function classFieldPayload(id) {
+    const el = $(id);
+    if (!el) return {};
+    const raw = String(el.value || '');
+    if (raw.indexOf('legacy:') === 0) return { class_id: '', class_name: raw.slice(7) };
+    if (!raw) return { class_id: '', no_class: true };
+    return { class_id: raw };
+  }
+
+  async function openAddStudent() {
+    await refreshTeacherClasses();
+    const classField = teacherClassOptions.length
+      ? '<div class="fld"><label>班级</label>' + classSelectHtml('fClass', '') + '</div>'
+      : '<div class="fld"><label>班级</label><input id="fClass" class="filter-input" placeholder="如 机械2401" /></div>';
     openModal('新增学生',
       '<div class="form-grid">' +
         '<div class="fld"><label>学校 <i>*</i></label><input id="fSchool" class="filter-input" placeholder="如 安徽建筑大学" /></div>' +
-        '<div class="fld"><label>班级</label><input id="fClass" class="filter-input" placeholder="如 机械2401" /></div>' +
+        classField +
         '<div class="fld"><label>姓名 <i>*</i></label><input id="fName" class="filter-input" placeholder="学生姓名" /></div>' +
         '<div class="fld"><label>学号 <i>*</i></label><input id="fNo" class="filter-input" placeholder="学号（唯一）" /></div>' +
       '</div>' +
-      '<div class="hint">保存后该学号将自动开通 AI 教师提问权限。</div>' +
+      '<div class="hint">保存后该学号将自动开通 AI 教师提问权限。' +
+      (teacherClassOptions.length ? '班级从你创建的班级中选择，未分班可留空。' : '还没有班级时可先留空，之后再建班级并入。') + '</div>' +
       '<div id="fErr" class="form-err"></div>',
       '<button class="mini-btn" id="fCancel">取消</button>' +
       '<button class="login-btn filter-btn" id="fSave">保存</button>');
@@ -765,10 +807,12 @@
     $('fSave').addEventListener('click', async () => {
       const payload = {
         school: $('fSchool').value.trim(),
-        class_name: $('fClass').value.trim(),
         name: $('fName').value.trim(),
         student_no: $('fNo').value.trim()
       };
+      Object.assign(payload, $('fClass').tagName === 'SELECT'
+        ? classFieldPayload('fClass')
+        : { class_name: $('fClass').value.trim() });
       $('fErr').textContent = '';
       const identErr = studentIdentityError(payload.name, payload.student_no);
       if (identErr) { $('fErr').textContent = identErr; return; }
@@ -846,10 +890,20 @@
   }
 
   // ---- 批量导入 ----
-  function openImportStudents() {
+  async function openImportStudents() {
+    await refreshTeacherClasses();
+    const classField = teacherClassOptions.length
+      ? '<div class="fld"><label>导入到班级</label><select id="impClass" class="filter-select">' +
+          '<option value="">按文件里的班级名自动归并</option>' +
+          teacherClassOptions.map((c) => '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>').join('') +
+          '<option value="__none__">全部保持未分班</option>' +
+        '</select>' +
+        '<div class="hint" style="margin:0">自动归并：与班级同名的优先归入；若你只有一个班级，文件里其它班级名也会并入该班。</div></div>'
+      : '';
     openModal('批量导入学生',
       '<p class="hint">按模板填写 CSV（表头：学校,班级,姓名,学号）。可先下载模板。<br>' +
-      '导入成功后，这些学号会自动开通 AI 教师提问权限。</p>' +
+      '导入成功后，这些学号会自动开通 AI 教师提问权限；表头顺序不限，系统按列名识别。</p>' +
+      classField +
       '<div class="fld"><label>选择 CSV 文件</label><input type="file" id="impFile" accept=".csv,text/csv" /></div>' +
       '<div class="fld"><label>或直接粘贴内容（每行一条，逗号分隔）</label>' +
       '<textarea id="impText" class="filter-input imp-text" placeholder="安徽建筑大学,机械2401,张三,20240001"></textarea></div>' +
@@ -859,6 +913,13 @@
       '<button class="login-btn filter-btn" id="impCommit" disabled>确认导入</button>');
 
     let pendingRows = null;
+
+    const classPayload = () => {
+      const el = $('impClass');
+      if (!el || !el.value) return {};
+      if (el.value === '__none__') return { no_class: true };
+      return { class_id: el.value };
+    };
 
     $('impCancel').addEventListener('click', closeModal);
 
@@ -875,7 +936,7 @@
       const box = $('impResult');
       if (!rows.length) { box.innerHTML = '<span class="err">没有可导入的数据，请检查格式。</span>'; return; }
       $('impValidate').disabled = true;
-      const res = await api.importStudents({ mode: 'validate', rows });
+      const res = await api.importStudents(Object.assign({ mode: 'validate', rows }, classPayload()));
       $('impValidate').disabled = false;
       if (!res || !res.ok) {
         box.innerHTML = '<span class="err">' + ((res && res.msg) || '校验失败') + '</span>';
@@ -887,6 +948,10 @@
         '</b>，学号重复 <b class="err">' + (s.duplicate || 0) + '</b>，信息缺失 <b class="err">' +
         (s.missing || 0) + '</b>' +
         (formatErr ? '，格式错误 <b class="err">' + formatErr + '</b>' : '') + '</div>';
+      html += '<div class="hint">其中可归入班级 <b>' + (s.class_assigned || 0) + '</b> 条' +
+        (s.class_name ? '（' + esc(s.class_name) + '）' : '') +
+        ((s.class_unmatched || 0) ? '，未匹配班级 <b class="err">' + s.class_unmatched + '</b> 条（将保持未分班）' : '') +
+        '</div>';
       if (res.errors && res.errors.length) {
         html += '<div class="imp-errs">';
         res.errors.slice(0, 30).forEach((er) => {
@@ -903,7 +968,7 @@
     $('impCommit').addEventListener('click', async () => {
       if (!pendingRows) return;
       $('impCommit').disabled = true;
-      const res = await api.importStudents({ mode: 'commit', rows: pendingRows });
+      const res = await api.importStudents(Object.assign({ mode: 'commit', rows: pendingRows }, classPayload()));
       if (res && res.ok) {
         alert('导入完成：新增 ' + res.added + ' 条');
         closeModal();
@@ -1329,6 +1394,7 @@
       '<div class="card">' +
         '<div class="tool-row">' +
           (archived ? '' : '<button class="login-btn filter-btn" id="cdAdd">+ 添加学生</button>') +
+          (archived ? '' : '<button class="mini-btn" id="cdSync">从名册并入</button>') +
           '<button class="mini-btn" id="cdBack">返回班级列表</button>' +
         '</div>' +
         '<div class="page-sub" style="margin:0 0 8px">学生名单 <b>' + members.length + '</b> 人</div>' +
@@ -1340,6 +1406,8 @@
     if (backBtn) backBtn.addEventListener('click', () => { location.hash = '#/classes'; });
     const addBtn = $('cdAdd');
     if (addBtn) addBtn.addEventListener('click', () => openAddClassMembers(classId, c.name || ''));
+    const syncBtn = $('cdSync');
+    if (syncBtn) syncBtn.addEventListener('click', () => openSyncMembers(classId, c.name || ''));
     classMembersCache = members;
     classMemberPage.page = 1;
     renderClassMemberTable(classId, archived);
@@ -1458,6 +1526,62 @@
   }
 
   // 移出学生：确认后调用服务端，成功刷新详情
+  // 从名册并入：把名册中已存在但未关联到本班的学生补进来（修复"先建班级、后从学生页录入"造成的历史数据）
+  async function openSyncMembers(classId, className) {
+    const first = await api.syncClassMembers({ class_id: classId, dry_run: true });
+    if (!first || !first.ok) { alert(classErrText(first, '预览失败')); return; }
+
+    openModal('从名册并入「' + className + '」',
+      '<div class="hint">把名册中已存在、但还没关联到本班的学生并进来（常见于先建班级、再从学生页录入或导入的情况）。' +
+      '并入只改班级关联，不动姓名、学号与 AI 白名单。</div>' +
+      '<label class="pick-sub" style="display:block;margin:0 0 8px">' +
+        '<input type="checkbox" id="syncAdoptAll" style="margin-right:6px"' +
+        (first.single_class ? '' : ' disabled') + '/>把班级名不一致的学生也并入本班' +
+        (first.single_class ? '' : '（你名下有多个班级，此选项不可用）') + '</label>' +
+      '<div id="syncResult"></div>' +
+      '<div id="syncErr" class="form-err"></div>',
+      '<button class="mini-btn" id="syncCancel">取消</button>' +
+      '<button class="mini-btn" id="syncDo" disabled>并入</button>');
+
+    let matched = 0;
+    const preview = async () => {
+      $('syncErr').textContent = '';
+      const adoptAll = !!($('syncAdoptAll') && $('syncAdoptAll').checked);
+      const res = await api.syncClassMembers({ class_id: classId, dry_run: true, adopt_unmatched: adoptAll });
+      if (!res || !res.ok) { $('syncErr').textContent = classErrText(res, '预览失败'); return; }
+      matched = res.matched || 0;
+      const list = (res.preview || []).map((s) =>
+        '<div class="pick-row"><span class="pick-main">' + esc(s.name) + '　' + esc(s.student_no) + '</span>' +
+        '<span class="pick-sub">' + esc(s.class_name || '未填班级') +
+        (s.class_id ? '　·　已属其它班级' : '　·　未关联班级') + '</span></div>').join('');
+      $('syncResult').innerHTML = '<div class="hint">可并入 <b>' + matched + '</b> 条</div>' +
+        (list ? '<div class="pick-list">' + list + '</div>' : '<div class="placeholder">没有需要并入的学生</div>');
+      $('syncDo').disabled = matched === 0;
+      $('syncDo').textContent = matched ? ('并入这 ' + matched + ' 条') : '并入';
+    };
+
+    $('syncCancel').addEventListener('click', closeModal);
+    if ($('syncAdoptAll')) $('syncAdoptAll').addEventListener('change', preview);
+    $('syncDo').addEventListener('click', async () => {
+      if (!matched) return;
+      const adoptAll = !!($('syncAdoptAll') && $('syncAdoptAll').checked);
+      if (!confirm('将把 ' + matched + ' 名学生并入「' + className + '」。\n\n只改班级关联，不删除任何数据。是否继续？')) return;
+      $('syncDo').disabled = true;
+      const res = await api.syncClassMembers({
+        class_id: classId, dry_run: false, adopt_unmatched: adoptAll, confirm_count: matched
+      });
+      if (!res || !res.ok) {
+        $('syncErr').textContent = classErrText(res, '并入失败');
+        $('syncDo').disabled = false;
+        return;
+      }
+      closeModal();
+      await renderRoute();
+    });
+
+    await preview();
+  }
+
   async function removeClassMember(classId, docId, name) {
     if (!confirm('确定把「' + name + '」移出本班吗？\n\n' +
       '学生记录与学习数据不会被删除；移出后该学生显示为「未分班」。')) return;
