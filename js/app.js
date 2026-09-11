@@ -183,6 +183,9 @@
           '<button class="mini-btn" id="personSearchBtn">查询</button>' +
           '<button class="mini-btn" id="personAllBtn">全选本页</button>' +
           '<button class="mini-btn" id="personClearBtn">清空选择</button>' +
+          '<label style="font-size:13px;display:flex;align-items:center;gap:4px">' +
+            '<input type="checkbox" id="hideEmptyAccounts" checked /> 只看有信息的（隐藏空账号）' +
+          '</label>' +
         '</div>' +
         '<div id="personList"></div>' +
         '<div class="hint" style="margin-top:12px">清理范围（可多选）：</div>' +
@@ -195,6 +198,7 @@
           '<button class="mini-btn" id="personPreviewBtn">预览选中人的数据</button>' +
           '<button class="mini-btn danger" id="personPurgeBtn">清理选中的人…</button>' +
           '<button class="mini-btn" id="legacyRosterBtn">清理无姓名的旧白名单…</button>' +
+          '<button class="mini-btn" id="emptyAccountsBtn">清理空账号…</button>' +
         '</div>' +
         '<div id="personResult"></div></div>';
 
@@ -226,6 +230,8 @@
       $('personPreviewBtn').addEventListener('click', () => previewPersonPurge(false));
       $('personPurgeBtn').addEventListener('click', () => previewPersonPurge(true));
       $('legacyRosterBtn').addEventListener('click', legacyRosterFlow);
+      $('emptyAccountsBtn').addEventListener('click', emptyAccountsFlow);
+      $('hideEmptyAccounts').addEventListener('change', applyPersonFilter);
       $('resetPreviewBtn').addEventListener('click', previewResetData);
       $('resetRunBtn').addEventListener('click', confirmResetData);
       await loadPersonList(false);
@@ -243,6 +249,7 @@
   };
   const PURGE_EXTRA_LABELS = { students: '名册记录', roster: 'AI 白名单', users: '注册账号', teacher_notes: '教师备注' };
   let personRows = [];
+  let personRowsAll = [];
   const personSelected = new Set();
 
   function personCountsSummary(counts) {
@@ -277,9 +284,19 @@
       box.innerHTML = '<div class="form-err">加载失败：' + esc((res && res.msg) || '未知错误') + '</div>';
       return;
     }
-    personRows = res.items || [];
+    personRowsAll = res.items || [];
     if (!keepSelection) personSelected.clear();
-    renderPersonTable(res.total);
+    applyPersonFilter(res.total);
+  }
+
+  // 客户端过滤：默认隐藏"已登录但从未注册"的空账号（无姓名、无学号）
+  function applyPersonFilter(totalCount) {
+    const hideEl = $('hideEmptyAccounts');
+    const hide = !hideEl || hideEl.checked;
+    personRows = hide
+      ? personRowsAll.filter((r) => (String(r.name || '').trim() || String(r.student_no || '').trim()))
+      : personRowsAll.slice();
+    renderPersonTable(totalCount);
   }
 
   function renderPersonTable(totalCount) {
@@ -387,6 +404,53 @@
       });
       html += '<div class="hint" style="margin-top:10px">已记入 maintenance_logs；回到「驾驶舱」刷新可见新的统计口径。</div>';
       out.innerHTML = html;
+      personSelected.clear();
+      await loadPersonList(false);
+    });
+  }
+
+  // 清理"已登录但从未注册"的空账号（无学号 / 无姓名）
+  async function emptyAccountsFlow() {
+    const out = $('personResult');
+    out.innerHTML = '<div class="hint">正在统计…</div>';
+    const pre = await api.emptyAccountsCleanup({ dry_run: true });
+    if (!pre || !pre.ok) {
+      out.innerHTML = '<div class="form-err">统计失败：' + esc((pre && pre.msg) || '未知错误') + '</div>';
+      return;
+    }
+    const total = pre.total || 0;
+    if (!total) {
+      out.innerHTML = '<div class="hint">没有空账号（学生都已完成注册）。</div>';
+      return;
+    }
+    const sampleDates = (pre.sample || [])
+      .map((s) => String(s.created_at || '').slice(0, 10))
+      .filter(Boolean);
+    out.innerHTML = '<div class="hint">待清理空账号 <b>' + total + '</b> 条' +
+      (sampleDates.length ? '（示例时间：' + esc(sampleDates.slice(0, 8).join('、')) + '）' : '') + '</div>';
+    openModal('确认清理空账号',
+      '<div class="hint">将删除 <b>' + total + '</b> 条"已登录但从未注册"的账号（无学校 / 无姓名 / 无学号）。' +
+      '<br>这类记录不属于名册、不在白名单、没有学习数据；删除后该微信号下次打开小程序会重新生成一条空账号，属正常现象。' +
+      '<br><b>已完成注册的学生账号不会被删除。</b></div>' +
+      '<div class="hint" style="margin:12px 0 6px">请输入条数 <b>' + total + '</b> 以确认：</div>' +
+      '<div class="fld"><input class="filter-input" id="emptyConfirmInput" placeholder="输入 ' + total + '" /></div>',
+      '<button class="mini-btn" id="emptyCancelBtn">取消</button>' +
+      '<button class="mini-btn danger" id="emptyConfirmBtn">确认清理</button>');
+    $('emptyCancelBtn').addEventListener('click', closeModal);
+    $('emptyConfirmBtn').addEventListener('click', async () => {
+      const el = $('emptyConfirmInput');
+      if (String((el && el.value) || '').trim() !== String(total)) {
+        alert('输入的条数与待清理条数不一致（应为 ' + total + '），已取消');
+        return;
+      }
+      const res = await api.emptyAccountsCleanup({ dry_run: false, confirm_count: total });
+      closeModal();
+      const box = $('personResult');
+      if (!res || !res.ok) {
+        box.innerHTML = '<div class="form-err">清理失败：' + esc((res && res.msg) || '未知错误') + '</div>';
+        return;
+      }
+      box.innerHTML = '<div class="hint">已清理 <b>' + (res.removed || 0) + '</b> 条空账号，已记入 maintenance_logs。</div>';
       personSelected.clear();
       await loadPersonList(false);
     });

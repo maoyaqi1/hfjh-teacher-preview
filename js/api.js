@@ -144,6 +144,10 @@
     legacyRosterCleanup(payload) {
       return callTeacher('data.legacyRoster', payload || {});
     },
+    // 清理"已登录但从未注册"的空账号（无学号、无姓名）
+    emptyAccountsCleanup(payload) {
+      return callTeacher('data.emptyAccounts', payload || {});
+    },
     listTeachers() {
       return callTeacher('teacher.list', {});
     },
