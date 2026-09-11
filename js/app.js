@@ -6,17 +6,20 @@
 
   const routes = {
     dashboard: { title: '教学驾驶舱', sub: '学生如何学习点线面与 AI 教师' },
+    classes: { title: '班级管理', sub: '班级列表与学生归属' },
     students: { title: '学生管理', sub: '学生列表与搜索' },
     learning: { title: '学习记录', sub: '全体学生的学习行为事件流' },
     plp: { title: '点线面分析', sub: '点 / 线 / 面互动使用情况' },
     ai: { title: 'AI 教师分析', sub: '学生提问记录与高频知识点' },
     teachers: { title: '教师管理', sub: '超级管理员：教师账号管理' },
     'student-detail': { title: '学生详情', sub: '学习档案与学习轨迹' },
+    'class-detail': { title: '班级详情', sub: '班级信息与学生名单' },
     settings: { title: '系统设置', sub: '个人信息与退出' }
   };
 
   const navItems = [
     { key: 'dashboard', label: '驾驶舱', icon: '📊' },
+    { key: 'classes', label: '班级', icon: '🏫' },
     { key: 'students', label: '学生', icon: '👥' },
     { key: 'learning', label: '学习记录', icon: '🕘' },
     { key: 'plp', label: '点线面', icon: '📐' },
@@ -134,6 +137,8 @@
     content.innerHTML = '';
     if (key === 'dashboard') await renderDashboard(content);
     else if (key === 'teachers') await renderTeachers(content);
+    else if (key === 'classes') await renderClasses(content);
+    else if (key === 'class-detail') await renderClassDetail(content);
     else if (key === 'students') await renderStudents(content);
     else if (key === 'learning') await renderLearning(content);
     else if (key === 'student-detail') await renderStudentDetail(content);
@@ -279,6 +284,7 @@
           '<button class="login-btn filter-btn" id="stuAdd">+ 新增学生</button>' +
           '<button class="mini-btn" id="stuTpl">下载导入模板</button>' +
           '<button class="mini-btn" id="stuImport">批量导入</button>' +
+          (superUser ? '<button class="mini-btn danger" id="stuPurge">批量删除</button>' : '') +
         '</div>' +
         '<div class="filter-row">' +
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
@@ -300,6 +306,8 @@
     $('stuAdd').addEventListener('click', openAddStudent);
     $('stuTpl').addEventListener('click', downloadStudentTemplate);
     $('stuImport').addEventListener('click', openImportStudents);
+    const purgeBtn = $('stuPurge');
+    if (purgeBtn) purgeBtn.addEventListener('click', openPurgeStudents);
     $('stuSearch').addEventListener('click', () => {
       studentFilter.keyword = $('stuKeyword').value.trim();
       studentFilter.school = $('stuSchool').value;
@@ -485,6 +493,128 @@
     } else {
       alert((res && res.msg) || '移除失败');
     }
+  }
+
+  // ---- 名册批量清理（维护工具，仅超管；服务端同样只允许超管）----
+  // 只删除名册记录并撤销这些学号的 AI 白名单；不删除微信注册账号、学习记录与 AI 问答。
+  function purgeDateToIso(dateStr, endOfDay) {
+    if (!dateStr) return '';
+    const d = new Date(dateStr + (endOfDay ? 'T23:59:59.999+08:00' : 'T00:00:00+08:00'));
+    return isNaN(d.getTime()) ? '' : d.toISOString();
+  }
+
+  function openPurgeStudents() {
+    if (!isSuper()) { alert('仅超级管理员可使用批量删除'); return; }
+
+    openModal('批量删除名册记录（维护工具）',
+      '<div class="hint">用于清理误导入的名册记录：<b>只删除名册记录并撤销这些学号的 AI 提问白名单</b>，' +
+      '不会删除学生的微信注册账号、学习记录与 AI 问答记录。删除前请先在云开发控制台导出备份。</div>' +
+      '<div class="form-grid">' +
+        '<div class="fld"><label>学校（精确匹配）</label>' +
+          '<input id="pgSchool" class="filter-input" placeholder="如 安徽建筑大学" /></div>' +
+        '<div class="fld"><label>班级（精确匹配）</label>' +
+          '<input id="pgClass" class="filter-input" placeholder="如 机械2401" /></div>' +
+        '<div class="fld"><label>学号 / 姓名包含</label>' +
+          '<input id="pgKeyword" class="filter-input" placeholder="可选" /></div>' +
+        '<div class="fld"><label>注册状态</label><select id="pgReg" class="filter-select">' +
+          '<option value="">全部</option><option value="no">未注册</option><option value="yes">已注册</option>' +
+        '</select></div>' +
+        '<div class="fld"><label>创建日期（从）</label>' +
+          '<input id="pgFrom" class="filter-input" type="date" /></div>' +
+        '<div class="fld"><label>创建日期（到，含当天）</label>' +
+          '<input id="pgTo" class="filter-input" type="date" /></div>' +
+      '</div>' +
+      '<label class="pick-sub" style="display:block;margin:0 0 8px">' +
+        '<input type="checkbox" id="pgNotes" style="margin-right:6px" />同时清理这些学生的教师备注（默认不清理）</label>' +
+      '<div id="pgResult"></div>' +
+      '<div id="pgErr" class="form-err"></div>',
+      '<button class="mini-btn" id="pgCancel">取消</button>' +
+      '<button class="mini-btn" id="pgPreview">预览匹配记录</button>' +
+      '<button class="mini-btn danger" id="pgCommit" disabled>删除匹配记录</button>');
+
+    let matched = 0;
+    let batchSize = 0;
+
+    const buildPayload = () => ({
+      school: $('pgSchool').value.trim(),
+      class_name: $('pgClass').value.trim(),
+      keyword: $('pgKeyword').value.trim(),
+      registered: $('pgReg').value,
+      created_from: purgeDateToIso($('pgFrom').value, false),
+      created_to: purgeDateToIso($('pgTo').value, true),
+      purge_notes: !!$('pgNotes').checked
+    });
+    const hasCondition = (p) => !!(p.school || p.class_name || p.keyword || p.registered ||
+      p.created_from || p.created_to);
+
+    $('pgCancel').addEventListener('click', closeModal);
+
+    $('pgPreview').addEventListener('click', async () => {
+      $('pgErr').textContent = '';
+      const payload = buildPayload();
+      if (!hasCondition(payload)) {
+        $('pgErr').textContent = '请至少填写一个筛选条件（学校 / 班级 / 学号姓名 / 注册状态 / 创建日期）';
+        return;
+      }
+      $('pgPreview').disabled = true;
+      const res = await api.purgeStudents(payload);
+      $('pgPreview').disabled = false;
+      if (!res || !res.ok) {
+        $('pgErr').textContent = classErrText(res, '预览失败');
+        return;
+      }
+
+      matched = res.matched || 0;
+      batchSize = res.batch || 0;
+      const list = (res.preview || []).map((s) =>
+        '<div class="pick-row"><span class="pick-main">' + esc(s.name) + '　' + esc(s.student_no) +
+        '</span><span class="pick-sub">' + esc(s.school || '—') + '　·　' + esc(s.class_name || '未分班') +
+        '　·　' + (s.registered ? '已注册' : '未注册') + '　·　' + esc(fmtDate(s.created_at)) + '</span></div>').join('');
+
+      $('pgResult').innerHTML =
+        '<div class="hint">匹配 <b>' + matched + '</b> 条，本次最多处理 <b>' + batchSize + '</b> 条' +
+        (res.remaining_after_batch ? '，处理完还剩 <b>' + res.remaining_after_batch + '</b> 条' : '') +
+        (res.will_revoke_roster ? '；将同步撤销这些学号的 AI 提问白名单。' : '；不撤销 AI 白名单。') + '</div>' +
+        (list ? '<div class="pick-list">' + list + '</div>' : '<div class="placeholder">没有匹配的记录</div>');
+
+      $('pgCommit').disabled = matched === 0;
+      $('pgCommit').textContent = matched === 0
+        ? '没有匹配记录'
+        : ('删除这 ' + Math.min(matched, batchSize) + ' 条');
+    });
+
+    $('pgCommit').addEventListener('click', async () => {
+      if (!matched) return;
+      const willDelete = Math.min(matched, batchSize);
+      if (!confirm('将删除 ' + willDelete + ' 条名册记录，并撤销这些学号的 AI 提问白名单。\n\n' +
+        '不会删除微信注册账号、学习记录与 AI 问答记录；此操作不可撤销，请确认已导出备份。\n\n是否继续？')) return;
+
+      $('pgErr').textContent = '';
+      $('pgCommit').disabled = true;
+      const payload = Object.assign(buildPayload(), { dry_run: false, confirm_count: matched });
+      const res = await api.purgeStudents(payload);
+      if (!res || !res.ok) {
+        $('pgErr').textContent = classErrText(res, '删除失败');
+        $('pgCommit').disabled = false;
+        return;
+      }
+
+      const failed = res.errors || [];
+      $('pgResult').innerHTML =
+        '<div class="form-ok">已删除 ' + (res.removed_students || 0) + ' 条名册记录，撤销 AI 白名单 ' +
+        (res.revoked_roster || 0) + ' 条' +
+        (res.removed_notes ? '，清理教师备注 ' + res.removed_notes + ' 条' : '') + '。</div>' +
+        (failed.length
+          ? '<div class="form-err">以下 ' + failed.length + ' 条未删除：</div>' +
+            failed.map((f) => '<div class="pick-sub">· ' + esc(f.msg || f.code || '') + '</div>').join('')
+          : '') +
+        '<div class="hint">' + esc(res.hint || '') + '</div>' +
+        (res.remaining
+          ? '<div class="form-err">还有 ' + res.remaining + ' 条未处理：请再次点击「预览匹配记录」后继续删除。</div>'
+          : '');
+      $('pgCommit').textContent = '删除匹配记录';
+      await loadStudents();
+    });
   }
 
   // 编辑单条名册记录（学校 / 班级 / 姓名 / 学号）
@@ -864,6 +994,368 @@
 
   function renderPlaceholder(container, name) {
     container.innerHTML = '<div class="card"><div class="placeholder"><div class="icon">🚧</div><div>「' + name + '」将在后续阶段实现</div></div></div>';
+  }
+
+  // ---- 班级管理（REQ-002 第一阶段）----
+  // 数据关系：students.class_id → classes._id 是唯一权威关联；students.class_name 是兼容展示快照。
+  // 前端只调用 class.* 接口，不直接改写学生的 class_id / class_name；权限由服务端强制，失败照实显示。
+  const classFilter = { keyword: '', status: '' }; // status: '' = 进行中（服务端默认）| 'archived' | 'all'
+  const CLASS_STATUS_TEXT = { active: '进行中', archived: '已停用' };
+  const CLASS_ERROR_TEXT = {
+    UNAUTHORIZED: '登录已过期，请重新登录',
+    FORBIDDEN: '没有权限操作该班级或学生',
+    NOT_FOUND: '班级或学生不存在',
+    DUPLICATE_CLASS: '已存在同名班级（同一教师下「班级名称 + 学校」不能重复）',
+    CLASS_ARCHIVED: '班级已停用，请先恢复后再调整成员',
+    IN_OTHER_CLASS: '该学生已在其他班级中，请先移出',
+    ALREADY_IN_CLASS: '该学生已在本班',
+    NOT_IN_CLASS: '该学生不在本班',
+    NOT_IN_SCOPE: '该学生不在本班负责教师的名册中',
+    TOO_MANY_ITEMS: '一次选择的学生过多，请分批操作',
+    EMPTY_PATCH: '没有需要修改的内容',
+    MISSING_CLASS_NAME: '请填写班级名称',
+    MISSING_STUDENT_IDS: '请选择学生',
+    NO_FILTER: '请至少填写一个筛选条件',
+    CONFIRM_MISMATCH: '匹配条数已变化，请重新预览后再删除'
+  };
+
+  // 服务端返回的 msg 优先；缺失时按 code 给出可读文案，保证错误不被静默吞掉
+  function classErrText(res, fallback) {
+    if (res && res.msg) return res.msg;
+    if (res && res.code && CLASS_ERROR_TEXT[res.code]) return CLASS_ERROR_TEXT[res.code];
+    return fallback || '操作失败';
+  }
+
+  function classStatusHtml(status) {
+    const archived = status === 'archived';
+    return '<span class="' + (archived ? 'pending' : 'ok') + '">' +
+      esc(CLASS_STATUS_TEXT[archived ? 'archived' : 'active']) + '</span>';
+  }
+
+  function statCardHtml(value, label) {
+    return '<div class="stat-card"><div class="stat-num">' + (value || 0) + '</div>' +
+      '<div class="stat-label">' + esc(label) + '</div></div>';
+  }
+
+  // 班级列表：普通教师=自己的班级；超管=全部（含负责教师列）
+  async function renderClasses(container) {
+    container.innerHTML =
+      '<div class="page-title">班级管理</div>' +
+      '<div class="page-sub" id="clsSumLine">—</div>' +
+      '<div class="card">' +
+        '<div class="tool-row">' +
+          '<button class="login-btn filter-btn" id="clsAdd">+ 新建班级</button>' +
+        '</div>' +
+        '<div class="filter-row">' +
+          '<input id="clsKeyword" class="filter-input" placeholder="搜索班级名称或学校" />' +
+          '<select id="clsStatus" class="filter-select">' +
+            '<option value="">进行中</option>' +
+            '<option value="archived">已停用</option>' +
+            '<option value="all">全部</option>' +
+          '</select>' +
+          '<button id="clsSearch" class="login-btn filter-btn">搜索</button>' +
+        '</div>' +
+        '<table id="clsTable" style="width:100%;border-collapse:collapse"></table>' +
+      '</div>';
+
+    $('clsKeyword').value = classFilter.keyword;
+    $('clsStatus').value = classFilter.status;
+    $('clsAdd').addEventListener('click', () => openClassModal(null));
+    $('clsSearch').addEventListener('click', () => {
+      classFilter.keyword = $('clsKeyword').value.trim();
+      classFilter.status = $('clsStatus').value;
+      loadClasses();
+    });
+    $('clsKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('clsSearch').click(); });
+    $('clsStatus').addEventListener('change', () => $('clsSearch').click());
+
+    await loadClasses();
+  }
+
+  async function loadClasses() {
+    const table = $('clsTable');
+    if (!table) return;
+    table.innerHTML = '<tr><td style="padding:16px;color:#6a7688">加载中…</td></tr>';
+
+    const res = await api.listClasses(classFilter);
+    if (!res || !res.ok) {
+      table.innerHTML = '<tr><td style="padding:16px;color:#e04444">' +
+        esc(classErrText(res, '班级列表加载失败')) + '</td></tr>';
+      return;
+    }
+
+    const superUser = isSuper();
+    const items = res.items || [];
+    const sum = res.summary || { total: 0, active: 0, archived: 0 };
+    $('clsSumLine').innerHTML = '进行中 <b>' + (sum.active || 0) + '</b> 个　·　已停用 <b>' +
+      (sum.archived || 0) + '</b> 个';
+
+    let html = '<tr style="background:var(--panel-soft);text-align:left">' +
+      '<th style="padding:10px">班级名称</th><th>学校</th>' +
+      (superUser ? '<th>负责教师</th>' : '') +
+      '<th>成员数</th><th>已注册</th><th>状态</th>' +
+      '<th style="text-align:right">操作</th></tr>';
+
+    items.forEach((c) => {
+      const archived = c.status === 'archived';
+      let ops = '<button class="mini-btn" data-view="' + esc(c.id) + '">查看</button> ' +
+        '<button class="mini-btn" data-edit="' + esc(c.id) + '" data-name="' + esc(c.name) +
+        '" data-school="' + esc(c.school) + '">编辑</button>';
+      if (!archived) {
+        ops += ' <button class="mini-btn danger" data-archive="' + esc(c.id) + '" data-name="' +
+          esc(c.name) + '">停用</button>';
+      }
+      html += '<tr style="border-top:1px solid var(--border)">' +
+        '<td style="padding:10px"><a class="link" href="#/class-detail?id=' + esc(c.id) + '">' +
+          esc(c.name) + '</a></td>' +
+        '<td>' + (c.school ? esc(c.school) : '<span style="color:#9aa5b2">—</span>') + '</td>' +
+        (superUser ? '<td style="color:#6a7688">' + esc(c.owner_teacher_name || '—') + '</td>' : '') +
+        '<td>' + (c.member_count || 0) + '</td>' +
+        '<td>' + (c.registered_count || 0) + '</td>' +
+        '<td>' + classStatusHtml(c.status) + '</td>' +
+        '<td style="text-align:right">' + ops + '</td></tr>';
+    });
+
+    if (!items.length) {
+      const emptyText = classFilter.status === 'archived'
+        ? '没有已停用的班级'
+        : (classFilter.keyword ? '没有匹配的班级' : '还没有班级，点击「+ 新建班级」开始');
+      html += '<tr><td colspan="' + (superUser ? 7 : 6) +
+        '" style="padding:26px;text-align:center;color:#9aa5b2">' + emptyText + '</td></tr>';
+    }
+    table.innerHTML = html;
+
+    table.querySelectorAll('button[data-view]').forEach((btn) => {
+      btn.addEventListener('click', () => { location.hash = '#/class-detail?id=' + btn.dataset.view; });
+    });
+    table.querySelectorAll('button[data-edit]').forEach((btn) => {
+      btn.addEventListener('click', () => openClassModal({
+        id: btn.dataset.edit, name: btn.dataset.name, school: btn.dataset.school
+      }));
+    });
+    table.querySelectorAll('button[data-archive]').forEach((btn) => {
+      btn.addEventListener('click', () => archiveClass(btn.dataset.archive, btn.dataset.name));
+    });
+  }
+
+  // 新建 / 编辑班级（cls 为空表示新建）
+  function openClassModal(cls) {
+    const isEdit = !!(cls && cls.id);
+    openModal(isEdit ? '编辑班级' : '新建班级',
+      '<div class="form-grid">' +
+        '<div class="fld"><label>班级名称 <i>*</i></label>' +
+          '<input id="cName" class="filter-input" placeholder="如 机械2401" value="' +
+          esc(isEdit ? cls.name : '') + '" /></div>' +
+        '<div class="fld"><label>学校</label>' +
+          '<input id="cSchool" class="filter-input" placeholder="如 安徽建筑大学" value="' +
+          esc(isEdit ? cls.school : '') + '" /></div>' +
+      '</div>' +
+      '<div class="hint">同一教师下「班级名称 + 学校」不能与进行中的班级重复；已停用的班级不占用名称。' +
+      (isEdit ? '<br />重命名后，本班学生的展示班级名由服务端同步更新。' : '') + '</div>' +
+      '<div id="cErr" class="form-err"></div>',
+      '<button class="mini-btn" id="cCancel">取消</button>' +
+      '<button class="login-btn filter-btn" id="cSave">保存</button>');
+
+    $('cCancel').addEventListener('click', closeModal);
+    $('cSave').addEventListener('click', async () => {
+      const name = $('cName').value.trim();
+      const school = $('cSchool').value.trim();
+      $('cErr').textContent = '';
+      if (!name) { $('cErr').textContent = '请填写班级名称'; return; }
+
+      $('cSave').disabled = true;
+      const res = isEdit
+        ? await api.updateClass({ class_id: cls.id, name, school })
+        : await api.createClass({ name, school });
+      $('cSave').disabled = false;
+
+      if (res && res.ok) {
+        closeModal();
+        await renderRoute();
+      } else {
+        $('cErr').textContent = classErrText(res, '保存失败');
+      }
+    });
+    setTimeout(() => { const el = $('cName'); if (el) el.focus(); }, 50);
+  }
+
+  // 停用班级（软删除，不删除学生与学习数据）
+  async function archiveClass(classId, name) {
+    if (!confirm('确定停用班级「' + name + '」吗？\n\n· 班级不再出现在「进行中」列表\n' +
+      '· 学生名单与学习数据不会被删除\n· 学生仍保留在本班，不会被自动改成未分班')) return;
+    const res = await api.archiveClass(classId, true);
+    if (res && res.ok) {
+      await loadClasses();
+    } else {
+      alert(classErrText(res, '停用失败'));
+    }
+  }
+
+  // 班级详情：班级信息 + 学生名单（已停用班级只读）
+  async function renderClassDetail(container) {
+    const classId = hashParam('id');
+    container.innerHTML = '<div class="card"><div class="placeholder">加载中…</div></div>';
+    if (!classId) {
+      container.innerHTML = '<div class="card"><div class="placeholder">缺少班级 ID</div></div>';
+      return;
+    }
+
+    const res = await api.classDetail(classId);
+    if (!res || !res.ok) {
+      container.innerHTML =
+        '<div class="card"><div class="placeholder">' + esc(classErrText(res, '班级加载失败')) + '</div>' +
+        '<div style="text-align:center;margin-top:12px">' +
+        '<button class="mini-btn" id="cdErrBack">返回班级列表</button></div></div>';
+      const back = $('cdErrBack');
+      if (back) back.addEventListener('click', () => { location.hash = '#/classes'; });
+      return;
+    }
+
+    const c = res.class || {};
+    const sum = res.summary || { member_count: 0, registered_count: 0 };
+    const members = res.members || [];
+    const archived = c.status === 'archived';
+    const unregistered = Math.max(0, (sum.member_count || 0) - (sum.registered_count || 0));
+
+    container.innerHTML =
+      '<div class="page-title">' + esc(c.name || '班级') + '</div>' +
+      '<div class="page-sub">' + (c.school ? esc(c.school) : '未填写学校') + '　·　' +
+        esc(CLASS_STATUS_TEXT[archived ? 'archived' : 'active']) + '</div>' +
+      '<div class="card">' +
+        '<div class="stat-grid">' +
+          statCardHtml(sum.member_count, '成员人数') +
+          statCardHtml(sum.registered_count, '已注册') +
+        '</div>' +
+        '<div class="hint" style="margin:12px 0 0">负责教师：' + esc(c.owner_teacher_name || '—') +
+          '　·　未注册：' + unregistered + ' 人</div>' +
+        (archived
+          ? '<div class="form-err" style="color:#a26a00">该班级已停用：仍可查看名单，但不能添加或移出学生。</div>'
+          : '') +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="tool-row">' +
+          (archived ? '' : '<button class="login-btn filter-btn" id="cdAdd">+ 添加学生</button>') +
+          '<button class="mini-btn" id="cdBack">返回班级列表</button>' +
+        '</div>' +
+        '<div class="page-sub" style="margin:0 0 8px">学生名单 <b>' + members.length + '</b> 人</div>' +
+        '<table id="cdTable" style="width:100%;border-collapse:collapse"></table>' +
+      '</div>';
+
+    let rows = '<tr style="background:var(--panel-soft);text-align:left">' +
+      '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>注册状态</th><th>最近登录</th>' +
+      (archived ? '' : '<th style="text-align:right">操作</th>') + '</tr>';
+    members.forEach((m) => {
+      rows += '<tr style="border-top:1px solid var(--border)">' +
+        '<td style="padding:10px">' + esc(m.name) + '</td>' +
+        '<td>' + esc(m.student_no) + '</td>' +
+        '<td>' + esc(m.school) + '</td>' +
+        '<td>' + (m.registered ? '<span class="ok">已注册</span>' : '<span class="pending">未注册</span>') + '</td>' +
+        '<td style="color:#6a7688">' + fmtDate(m.last_login_at) + '</td>' +
+        (archived ? '' : '<td style="text-align:right">' +
+          '<button class="mini-btn danger" data-remove="' + esc(m.doc_id) + '" data-name="' +
+          esc(m.name) + '">移出班级</button></td>') +
+        '</tr>';
+    });
+    if (!members.length) {
+      rows += '<tr><td colspan="' + (archived ? 5 : 6) +
+        '" style="padding:26px;text-align:center;color:#9aa5b2">' +
+        (archived ? '该班级没有学生' : '该班级还没有学生，点击「+ 添加学生」加入') + '</td></tr>';
+    }
+    $('cdTable').innerHTML = rows;
+
+    const backBtn = $('cdBack');
+    if (backBtn) backBtn.addEventListener('click', () => { location.hash = '#/classes'; });
+    const addBtn = $('cdAdd');
+    if (addBtn) addBtn.addEventListener('click', () => openAddClassMembers(classId, c.name || ''));
+    $('cdTable').querySelectorAll('button[data-remove]').forEach((btn) => {
+      btn.addEventListener('click', () => removeClassMember(classId, btn.dataset.remove, btn.dataset.name));
+    });
+  }
+
+  // 添加学生：候选由服务端给出（仅本班负责教师名册、未加入本班的学生）
+  async function openAddClassMembers(classId, className) {
+    const res = await api.classCandidates(classId);
+    if (!res || !res.ok) {
+      alert(classErrText(res, '候选学生加载失败'));
+      return;
+    }
+    const items = res.items || [];
+
+    let list = '';
+    if (items.length) {
+      list = items.map((s) => {
+        const blocked = !!s.in_other_class;
+        const stateText = blocked
+          ? '已在「' + esc(s.current_class_name || '其他班级') + '」中，需先移出'
+          : (s.current_class_name ? esc(s.current_class_name) : '未分班');
+        return '<label class="pick-row' + (blocked ? ' is-disabled' : '') + '">' +
+          '<input type="checkbox" class="pick-box" value="' + esc(s.doc_id) + '"' +
+            (blocked ? ' disabled' : '') + ' />' +
+          '<span class="pick-main">' + esc(s.name) + '　' + esc(s.student_no) + '</span>' +
+          '<span class="pick-sub">' + esc(s.school || '—') + '　·　' + stateText +
+            (s.registered ? '　·　已注册' : '　·　未注册') + '</span>' +
+          '</label>';
+      }).join('');
+    } else {
+      list = '<div class="placeholder">该班负责教师的名册中没有可添加的学生</div>';
+    }
+
+    openModal('添加学生到「' + className + '」',
+      '<div class="hint">候选范围由服务端决定：仅该班负责教师名册中尚未加入本班的学生。' +
+      '已在其他班级中的学生不能直接加入，需先移出后再添加。</div>' +
+      '<div class="pick-list" id="pickList">' + list + '</div>' +
+      '<div id="pickErr" class="form-err"></div>',
+      '<button class="mini-btn" id="pickCancel">取消</button>' +
+      '<button class="login-btn filter-btn" id="pickConfirm">确定</button>');
+
+    $('pickCancel').addEventListener('click', closeModal);
+    $('pickConfirm').addEventListener('click', async () => {
+      const ids = Array.prototype.slice.call(document.querySelectorAll('.pick-box:checked'))
+        .map((el) => el.value);
+      $('pickErr').textContent = '';
+      if (!ids.length) { $('pickErr').textContent = '请选择要加入的学生'; return; }
+
+      $('pickConfirm').disabled = true;
+      const r = await api.addClassMembers(classId, ids);
+      $('pickConfirm').disabled = false;
+      if (!r || !r.ok) {
+        $('pickErr').textContent = classErrText(r, '添加失败');
+        return;
+      }
+
+      const added = r.added || 0;
+      const failed = r.failed || [];
+      if (!failed.length) {
+        closeModal();
+        await renderRoute();
+        return;
+      }
+
+      // 部分成功：分别反馈 added 与 failed，不假装全部成功
+      $('pickList').innerHTML =
+        '<div class="form-ok">成功加入 ' + added + ' 人</div>' +
+        '<div class="form-err">以下 ' + failed.length + ' 人未加入：</div>' +
+        failed.map((f) => '<div class="pick-sub">· ' + esc(f.msg || f.code || '未加入') + '</div>').join('');
+      $('pickConfirm').parentNode.innerHTML = '<button class="mini-btn" id="pickClose">关闭</button>';
+      $('pickClose').addEventListener('click', async () => { closeModal(); await renderRoute(); });
+    });
+  }
+
+  // 移出学生：确认后调用服务端，成功刷新详情
+  async function removeClassMember(classId, docId, name) {
+    if (!confirm('确定把「' + name + '」移出本班吗？\n\n' +
+      '学生记录与学习数据不会被删除；移出后该学生显示为「未分班」。')) return;
+
+    const res = await api.removeClassMembers(classId, [docId]);
+    if (res && res.ok && (res.removed || 0) > 0) {
+      await renderRoute();
+      return;
+    }
+    if (res && res.ok && (res.failed || []).length) {
+      alert((res.failed[0] && res.failed[0].msg) || '移出失败');
+      return;
+    }
+    alert(classErrText(res, '移出失败'));
   }
 
   // ---- 学习记录（全量行为事件流）----
