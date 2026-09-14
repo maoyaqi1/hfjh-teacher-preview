@@ -136,6 +136,14 @@
     listPersonData(payload) {
       return callTeacher('data.personList', payload || {});
     },
+    // 数据标记（仅超管）：把账号标为 production / test / unknown
+    markQuality(payload) {
+      return callTeacher('data.markQuality', payload || {});
+    },
+    // 数据标记回填（仅超管）：dry_run 预览 → confirm_count 确认执行，可重复运行
+    backfillQuality(payload) {
+      return callTeacher('data.backfillQuality', payload || {});
+    },
     // 数据维护·按人清理：只删勾选这些人的数据（默认 dry_run 预览）
     purgePersonData(payload) {
       return callTeacher('data.personPurge', payload || {});

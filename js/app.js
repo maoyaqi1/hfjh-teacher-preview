@@ -641,6 +641,25 @@
     });
     html += '</div>';
 
+    // 数据分线（第一阶段口径）：在册学情 / 游客 / 测试（内部账号 + 演示班 + 人工标记）
+    const lines = d.lines || { total: 0, student: 0, guest: 0, test: 0 };
+    const ex = d.excluded || {};
+    const exParts = [];
+    if (ex.sessions) exParts.push('学习会话 ' + ex.sessions + ' 条');
+    if (ex.ai) exParts.push('AI 提问 ' + ex.ai + ' 条');
+    if (ex.demo_roster) exParts.push('演示班名册 ' + ex.demo_roster + ' 人');
+    html += '<div class="card"><div class="card-title">数据分线 · ' + (d.scope === 'me' ? '本范围' : '全局') + '</div>' +
+      '<div class="stat-grid">' +
+        statCardHtml(lines.student, '在册学情') +
+        statCardHtml(lines.guest, '游客') +
+        statCardHtml(lines.test, '测试 / 演示') +
+        statCardHtml(lines.total, '合计') +
+      '</div>' +
+      '<div class="hint" style="margin:8px 0 0">统计口径：AI 提问与学习数据只统计「在册学情」' +
+        '（名册命中、班级未被标记为演示班、非内部账号）；游客、内部账号、演示班与人工标记为 test 的数据不计入学情。' +
+        (exParts.length ? ' 本次已排除 ' + exParts.join('、') + '。' : '') +
+      '</div></div>';
+
     // 学情提醒（按统计规则生成，不做无依据推测）
     const alerts = d.alerts || [];
     if (alerts.length) {
@@ -653,14 +672,19 @@
 
     // 班级概况
     const classes = d.classes || [];
-    html += '<div class="card"><div class="card-title">班级概况</div>';
+    html += '<div class="card"><div class="card-title">班级概况</div>' +
+      '<div class="hint" style="margin:0 0 8px">按班级实体（class_id）统计；被超管标记为演示班的班级（如「教师组」）与其成员不计入本表、名册人数与学情统计。</div>';
     if (classes.length) {
       html += '<table style="width:100%;border-collapse:collapse">' +
         '<tr style="background:var(--panel-soft);text-align:left">' +
         '<th style="padding:8px">班级</th><th>名册人数</th><th>已注册</th><th>未注册</th><th>近7天活跃</th></tr>';
       classes.forEach((c) => {
         html += '<tr style="border-top:1px solid var(--border)">' +
-          '<td style="padding:8px">' + esc(c.class_name) + '</td>' +
+          '<td style="padding:8px">' + esc(c.class_name) +
+            ((c.class_legacy_names && c.class_legacy_names.length)
+              ? ' <span style="color:#a26a00;font-size:12px">（名册里写着「' + esc(c.class_legacy_names.join('、')) + '」，未关联班级）</span>'
+              : '') +
+          '</td>' +
           '<td>' + (c.total || 0) + '</td>' +
           '<td class="ok">' + (c.registered || 0) + '</td>' +
           '<td>' + (c.unregistered ? '<span class="err">' + c.unregistered + '</span>' : '0') + '</td>' +
@@ -750,6 +774,9 @@
       '<div class="card">' +
         '<div class="hint" style="margin:0 0 8px">这些学生已经用微信注册（能正常使用互动工具），但还没有被任何老师录入班级名册，' +
           '因此不能使用 AI 教师提问。由对应老师在「班级」页录入该学生（学号与姓名需与本人填写的一致）后，权限会自动开通。</div>' +
+        '<div class="hint" style="margin:0 0 8px">「数据标记」用于把测试数据从真实学情里剔除（production = 真实，test = 测试，unknown = 待定）——' +
+          '标记只影响报表口径，不影响学生能否使用 AI 教师。</div>' +
+        '<div class="tool-row"><button class="mini-btn" id="stuBackfill">一键回填数据标记…</button></div>' +
         '<div class="filter-row">' +
           '<input id="stuKeyword" class="filter-input" placeholder="搜索姓名或学号" />' +
           '<select id="stuSchool" class="filter-select"></select>' +
@@ -767,6 +794,23 @@
     });
     $('stuKeyword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('stuSearch').click(); });
     $('stuSchool').addEventListener('change', () => $('stuSearch').click());
+
+    $('stuBackfill').addEventListener('click', async () => {
+      const pre = await api.backfillQuality({ dry_run: true });
+      if (!pre || !pre.ok) { alert(classErrText(pre, '预览失败')); return; }
+      if (!pre.pending) { alert('没有需要回填的账号（数据标记已是最新）。'); return; }
+      const cats = pre.categories || {};
+      if (!confirm('将按规则回填 ' + pre.pending + ' 个账号的数据标记：\n\n' +
+        '· test ' + (cats.test || 0) + ' 个\n' +
+        '· production ' + (cats.production || 0) + ' 个\n' +
+        '· unknown ' + (cats.unknown || 0) + ' 个\n\n' +
+        '内部账号跳过 ' + ((pre.skipped && pre.skipped.internal) || 0) + ' 个；人工标记不会被覆盖。\n' +
+        '只写数据标记，不改动其它字段。是否继续？')) return;
+      const r = await api.backfillQuality({ dry_run: false, confirm_count: pre.pending });
+      if (!r || !r.ok) { alert(classErrText(r, '回填失败')); return; }
+      alert('回填完成：更新 ' + r.updated + ' 个账号。');
+      await loadStudents();
+    });
 
     await loadStudents();
   }
@@ -806,18 +850,31 @@
     return { items: studentItemsCache.slice(start, start + studentPage.size), total, pages, start };
   }
 
+  // 数据标记下拉（第一阶段）：production / test / unknown；未标记时显示占位项
+  function qualitySelectHtml(s) {
+    const current = s.data_quality || '';
+    let html = '<select class="filter-select" data-qid="' + esc(s.id) + '" style="min-width:118px">';
+    if (!current) html += '<option value="" selected>未标记</option>';
+    [['production', '真实'], ['test', '测试'], ['unknown', '待定']].forEach((pair) => {
+      html += '<option value="' + pair[0] + '"' + (current === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>';
+    });
+    html += '</select>';
+    if (s.data_quality_source === 'manual') html += ' <span style="color:#6a7688;font-size:12px">人工</span>';
+    return html;
+  }
+
   // 渲染学生表格（含分页与批量删除的选择列）
   function renderStudentTable() {
     const table = $('stuTable');
     if (!table) return;
     const { items, total, pages } = currentStudentPageItems();
     const showOwner = studentShowOwner;
-    const colCount = showOwner ? 8 : 7;
+    const colCount = showOwner ? 10 : 9;
 
     let html = '<tr style="background:var(--panel-soft);text-align:left">' +
       '<th style="padding:10px">姓名</th><th>学号</th><th>学校</th><th>班级</th>' +
       (showOwner ? '<th>录入教师</th>' : '') +
-      '<th>注册状态</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
+      '<th>注册状态</th><th>数据标记</th><th>最近登录</th><th style="text-align:right">操作</th></tr>';
 
     items.forEach((s) => {
       const cls = s.class_name
@@ -834,6 +891,7 @@
         '<td>' + cls + '</td>' +
         (showOwner ? '<td style="color:#6a7688">' + esc(s.owner_teacher_name || '无') + '</td>' : '') +
         '<td>' + reg + '</td>' +
+        '<td>' + qualitySelectHtml(s) + '</td>' +
         '<td style="color:#6a7688">' + fmtDate(s.last_login_at) + '</td>' +
         '<td style="text-align:right"><span style="color:#9aa5b2">白名单以外</span></td></tr>';
     });
@@ -842,6 +900,19 @@
         (studentFilter.keyword || studentFilter.school ? '没有匹配的学生' : '没有未入册的自主注册学生') + '</td></tr>';
     }
     table.innerHTML = html;
+
+    // 数据标记：选择后立即保存（仅超管可见本页）
+    table.querySelectorAll('select[data-qid]').forEach((el) => {
+      el.addEventListener('change', async () => {
+        const id = el.getAttribute('data-qid');
+        const quality = el.value;
+        if (!quality) return;
+        const r = await api.markQuality({ user_ids: [id], quality });
+        if (!r || !r.ok) { alert(classErrText(r, '标记失败')); return; }
+        const item = studentItemsCache.find((x) => x.id === id);
+        if (item) { item.data_quality = quality; item.data_quality_source = 'manual'; }
+      });
+    });
 
     const pager = $('stuPager');
     if (pager) {
@@ -1485,6 +1556,7 @@
         '<td style="padding:10px"><a class="link" href="#/class-detail?id=' + esc(c.id) + '"' +
           (archived ? ' style="color:#9aa5b2"' : '') + '>' +
           esc(c.name) + '</a>' +
+          (c.is_demo ? ' <span style="color:#a26a00;font-size:12px">（演示班）</span>' : '') +
           (archived ? ' <span style="color:#b3bcc7;font-size:12px">（已停用，可恢复）</span>' : '') + '</td>' +
         '<td>' + (c.school ? esc(c.school) : '<span style="color:#9aa5b2">—</span>') + '</td>' +
         (superUser ? '<td style="color:#6a7688">' + esc(c.owner_teacher_name || '—') + '</td>' : '') +
@@ -1634,6 +1706,7 @@
           (archived ? '' : '<button class="mini-btn" id="cdAdd">从名册添加</button>') +
           (archived ? '' : '<button class="mini-btn" id="cdSync">从名册并入</button>') +
         (archived ? '' : '<button class="mini-btn" id="cdBatch">批量管理</button>') +
+        (isSuper() ? '<button class="mini-btn" id="cdDemo">' + (c.is_demo ? '取消演示班标记' : '标记为演示班') + '</button>' : '') +
         (archived ? '<button class="mini-btn" id="cdRestore">恢复本班</button>' : '') +
           (archived ? '' : '<span class="purge-bar hidden" id="cdBatchBar">已选 <b id="cdSelCount">0</b> 条' +
             '<button class="mini-btn" id="cdSelAll">全选本页</button>' +
@@ -1661,6 +1734,18 @@
     if (importBtn) importBtn.addEventListener('click', () => openImportStudents({ id: classId, name: c.name || '' }));
     const syncBtn = $('cdSync');
     if (syncBtn) syncBtn.addEventListener('click', () => openSyncMembers(classId, c.name || ''));
+    // 演示班标记（仅超管）：只影响报表与班级统计，不影响学生能否使用 AI
+    const demoBtn = $('cdDemo');
+    if (demoBtn) {
+      demoBtn.addEventListener('click', async () => {
+        const next = !c.is_demo;
+        if (!confirm(next
+          ? '把「' + (c.name || '') + '」标记为演示班？\n\n· 该班与其成员不再计入班级概况、名册人数与学情统计\n· 不影响学生能否使用 AI 教师'
+          : '取消「' + (c.name || '') + '」的演示班标记？')) return;
+        const r = await api.updateClass({ class_id: classId, is_demo: next });
+        if (r && r.ok) { await renderClassDetail(container); } else alert(classErrText(r, '标记失败'));
+      });
+    }
     if ($('cdBatch')) $('cdBatch').addEventListener('click', () => enterClassBatch(classId, archived));
     if ($('cdRestore')) {
       $('cdRestore').addEventListener('click', async () => {
